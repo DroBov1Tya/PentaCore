@@ -1,6 +1,6 @@
+#![recursion_limit = "512"]
 use anyhow::{Ok, Result};
 
-mod api;
 mod app;
 mod config;
 mod constants;

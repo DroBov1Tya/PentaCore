@@ -7,9 +7,9 @@ use std::str::FromStr;
 
 pub async fn init_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let db_path = database_url
-        .strip_prefix("sqlite:")
-        .unwrap_or(database_url)
-        .trim_start_matches('/');
+        .strip_prefix("sqlite://")
+        .or_else(|| database_url.strip_prefix("sqlite:"))
+        .unwrap_or(database_url);
 
     if let Some(parent) = Path::new(db_path).parent() {
         if !parent.as_os_str().is_empty() {

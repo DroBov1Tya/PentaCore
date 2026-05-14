@@ -1,4 +1,5 @@
 pub mod attack_chains;
+pub mod client;
 pub mod coverage;
 pub mod credentials;
 pub mod endpoints;

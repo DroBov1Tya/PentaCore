@@ -1,9 +1,11 @@
 pub mod attack_chains;
 pub mod coverage;
 pub mod credentials;
+pub mod endpoint_examples;
 pub mod endpoints;
 pub mod findings;
 pub mod requests;
 pub mod scope;
 pub mod summary;
 pub mod target_relations;
+pub mod test_objects;

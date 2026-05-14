@@ -1,11 +1,21 @@
-use axum::Json;
+use axum::{Json, extract::State};
 use serde_json::json;
+use std::sync::Arc;
 
+use crate::app::AppState;
 use crate::constants::{VERSION, VERSION_DATE};
+
+pub async fn initialize(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let resp = crate::app::server::mcp_server::handle_request(&req, &state).await;
+    Json(resp)
+}
 
 pub async fn instructions() -> Json<serde_json::Value> {
     Json(json!({
-        "name": "pentest-context-mcp",
+        "name": "PentaCore-mcp",
         "version": VERSION,
         "description": "Persistent context store for pentest sessions. Saves tokens by giving structured, queryable memory across sessions. One targeted request returns exactly what you need instead of re-reading files or reconstructing state.",
         "how_to_use": {

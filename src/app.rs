@@ -1,7 +1,4 @@
-use crate::{
-    api,
-    config::{self, Config},
-};
+use crate::config::{self, Config};
 use anyhow::Result;
 use colored::*;
 use sqlx::{Pool, Sqlite};
@@ -11,9 +8,11 @@ use std::time::Duration;
 use tokio::signal;
 use tokio::sync::broadcast;
 
+mod client;
 pub mod database;
+mod server;
 
-use api::mcp_server;
+use server::mcp_server;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -52,7 +51,7 @@ impl Application {
         let server_state = Arc::clone(&self.state);
         let mcp_state = Arc::clone(&self.state);
 
-        let server_handle = tokio::spawn(async move { api::server::start(server_state).await });
+        let server_handle = tokio::spawn(async move { server::server::start(server_state).await });
         let mcp_handle = tokio::spawn(async move { mcp_server::start(mcp_state).await });
 
         tracing::info!("✅ Application ready");
@@ -78,13 +77,13 @@ impl Application {
         }
 
         for remaining in (1..=5).rev() {
-            print_shutdown_status(ShutdownMessage::Countdown {
-                seconds_left: remaining,
-            });
+            // print_shutdown_status(ShutdownMessage::Countdown {
+            //     seconds_left: remaining,
+            // });
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
-        print_shutdown_status(ShutdownMessage::Complete);
+        // print_shutdown_status(ShutdownMessage::Complete);
 
         let _ = state.shutdown.send(());
 
@@ -100,11 +99,11 @@ pub fn print_shutdown_status(message: ShutdownMessage) {
                 "⏳ [Shutting down]".bold().cyan(),
                 format!("{}s", seconds_left).bold().yellow()
             );
-            print!("{:<80}", status);
-            io::stdout().flush().unwrap();
+            eprint!("{:<80}", status);
+            io::stderr().flush().unwrap();
         }
         ShutdownMessage::Complete => {
-            println!("\n{}", "☑️ Shutdown complete".bold().green());
+            eprintln!("\n{}", "☑️ Shutdown complete".bold().green());
         }
     }
 }
