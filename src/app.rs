@@ -77,13 +77,13 @@ impl Application {
         }
 
         for remaining in (1..=5).rev() {
-            print_shutdown_status(ShutdownMessage::Countdown {
-                seconds_left: remaining,
-            });
+            // print_shutdown_status(ShutdownMessage::Countdown {
+            //     seconds_left: remaining,
+            // });
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
-        print_shutdown_status(ShutdownMessage::Complete);
+        // print_shutdown_status(ShutdownMessage::Complete);
 
         let _ = state.shutdown.send(());
 
@@ -99,11 +99,11 @@ pub fn print_shutdown_status(message: ShutdownMessage) {
                 "⏳ [Shutting down]".bold().cyan(),
                 format!("{}s", seconds_left).bold().yellow()
             );
-            print!("{:<80}", status);
-            io::stdout().flush().unwrap();
+            eprint!("{:<80}", status);
+            io::stderr().flush().unwrap();
         }
         ShutdownMessage::Complete => {
-            println!("\n{}", "☑️ Shutdown complete".bold().green());
+            eprintln!("\n{}", "☑️ Shutdown complete".bold().green());
         }
     }
 }

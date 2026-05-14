@@ -687,21 +687,66 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
                     user_agent: None,
                 };
                 match crate::app::client::req::make_req(prereq).await {
-                    Ok(resp) => {
-                        match resp.text().await {
-                            Ok(text) => text,
-                            Err(e) => return format!("Error reading response body from URL: {}", e),
-                        }
-                    }
+                    Ok(resp) => match resp.text().await {
+                        Ok(text) => text,
+                        Err(e) => return format!("Error reading response body from URL: {}", e),
+                    },
                     Err(e) => return format!("Error downloading spec from URL: {}", e),
                 }
             } else {
                 spec_json.to_string()
             };
 
-            match crate::app::client::api_parser::parse_and_import_openapi(&state.db, domain, &json_content).await {
+            match crate::app::client::api_parser::parse_and_import_openapi(
+                &state.db,
+                domain,
+                &json_content,
+            )
+            .await
+            {
                 Ok(summary) => summary,
                 Err(e) => format!("Failed to parse API spec: {}", e),
+            }
+        }
+        "parse_graphql_spec" => {
+            let spec_url = args["url"].as_str().unwrap_or("");
+            let spec_json = args["json"].as_str().unwrap_or("");
+            let base_endpoint = args["base_endpoint"].as_str().unwrap_or("/graphql");
+
+            if spec_url.is_empty() && spec_json.is_empty() {
+                return "Error: either 'url' or 'json' must be provided.".to_string();
+            }
+
+            let json_content = if !spec_url.is_empty() {
+                let prereq = crate::app::client::req::PreRequest {
+                    cookie: vec![],
+                    method: "GET".to_string(),
+                    url: spec_url.to_string(),
+                    body: "".to_string(),
+                    proxy: None,
+                    user_agent: None,
+                };
+                match crate::app::client::req::make_req(prereq).await {
+                    Ok(resp) => match resp.text().await {
+                        Ok(text) => text,
+                        Err(e) => return format!("Error reading response body from URL: {}", e),
+                    },
+                    Err(e) => return format!("Error downloading GraphQL spec from URL: {}", e),
+                }
+            } else {
+                spec_json.to_string()
+            };
+
+            match crate::app::client::api_parser::parse_and_import_graphql(
+                &state.db,
+                domain,
+                &json_content,
+                base_endpoint,
+            )
+            .await
+            {
+                Ok(summary) => summary,
+                Err(e) => format!("Failed to parse GraphQL spec: {}", e),
             }
         }
         _ => format!("Unknown tool: {}", name),

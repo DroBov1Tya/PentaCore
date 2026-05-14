@@ -11,7 +11,7 @@ pub fn initialize_msg(id: &Value) -> Value {
                 "resources": {}
             },
             "serverInfo": {
-                "name": "hackstorage-mcp-stdio",
+                "name": "PentaCore-mcp-stdio",
                 "version": crate::constants::VERSION
             }
         }
@@ -27,7 +27,7 @@ pub fn resources_list_msg(id: &Value) -> Value {
                 {
                     "uri": "pentest://instructions",
                     "name": "Pentest Context MCP Instructions",
-                    "description": "Rules and manual for using HackStorage. Read this to understand how to store context properly."
+                    "description": "Rules and manual for using PentaCore. Read this to understand how to store context properly."
                 }
             ]
         }
@@ -42,7 +42,7 @@ pub fn resources_read_msg(id: &Value, server_path: &str) -> Value {
             "contents": [{
                 "uri": "pentest://instructions",
                 "mimeType": "text/markdown",
-                "text": format!("## HackStorage MCP
+                "text": format!("## PentaCore MCP
 Persistent context store for pentest sessions. Saves tokens by giving structured, queryable memory across sessions.
 **NOTE TO AI:** You can use this MCP server OR you can make standard HTTP REST requests to localhost:{} if you find it more convenient. Both methods work and modify the same database.
 
@@ -273,7 +273,11 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "revoke_session",
-                    "description": "Clear the global session context (cookies, auth token). Use this when the session is expired or invalid."
+                    "description": "Clear the global session context (cookies, auth token). Use this when the session is expired or invalid.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
                 },
                 {
                     "name": "make_request",
@@ -447,6 +451,20 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "domain": { "type": "string", "description": "The target domain to link endpoints to." },
                             "url": { "type": "string", "description": "URL to the swagger.json file." },
                             "json": { "type": "string", "description": "Raw JSON string if URL is not available." }
+                        },
+                        "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "parse_graphql_spec",
+                    "description": "Download and parse a GraphQL Introspection JSON and automatically import all discovered queries and mutations into the database's endpoints table.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "The target domain to link endpoints to." },
+                            "url": { "type": "string", "description": "URL to the GraphQL introspection JSON file." },
+                            "json": { "type": "string", "description": "Raw JSON string if URL is not available." },
+                            "base_endpoint": { "type": "string", "description": "The base path for GraphQL, e.g. '/graphql'. Default is '/graphql'." }
                         },
                         "required": ["domain"]
                     }

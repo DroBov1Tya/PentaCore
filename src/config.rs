@@ -33,10 +33,21 @@ pub fn env_or(key: &str, default: &str) -> String {
 
 impl Config {
     fn load() -> Self {
+        let mut db_loc =
+            std::env::var("DB_LOCATION").unwrap_or_else(|_| "sqlite:./db/mcp.db".to_string());
+        if db_loc.starts_with("sqlite:./") {
+            if let Ok(exe_path) = std::env::current_exe() {
+                if let Some(parent) = exe_path.parent() {
+                    let new_prefix = format!("sqlite:{}/", parent.to_string_lossy());
+                    db_loc = db_loc.replace("sqlite:./", &new_prefix);
+                }
+            }
+        }
+
         Self {
-            // bot_token: env("BOT_TOKEN"),
-            db_location: env("DB_LOCATION"),
-            server_path: env("SERVER_PATH"),
+            db_location: db_loc,
+            server_path: std::env::var("SERVER_PATH")
+                .unwrap_or_else(|_| "localhost:8082".to_string()),
         }
     }
 }

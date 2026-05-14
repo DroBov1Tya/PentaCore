@@ -139,6 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_credentials_target    ON credentials(target_id);
 CREATE INDEX IF NOT EXISTS idx_chain_steps_chain     ON chain_steps(chain_id, step_order);
 CREATE INDEX IF NOT EXISTS idx_attack_chains_target  ON attack_chains(target_id, severity);
 
+-- Test objects registry: tracks artifacts created during testing for machine-verifiable cleanup
 CREATE TABLE IF NOT EXISTS test_objects (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     target_id       INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
@@ -153,6 +154,7 @@ CREATE TABLE IF NOT EXISTS test_objects (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Endpoint examples: minimal valid request/response pair per endpoint
 CREATE TABLE IF NOT EXISTS endpoint_examples (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint_id     INTEGER NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,

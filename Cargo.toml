@@ -1,6 +1,6 @@
 [package]
-name = "HackStorage"
-version = "0.1.4"
+name = "PentaCore"
+version = "0.1.5"
 edition = "2024"
 
 [dependencies]

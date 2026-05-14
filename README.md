@@ -1,6 +1,6 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/tandpfun/skill-icons/main/icons/Rust.svg" width="60" />
-  <h1>HackStorage MCP</h1>
+  <h1>PentaCore MCP</h1>
   <p><strong>The Autonomous Persistent Memory & Offensive Tooling Server for Pentest AI Agents</strong></p>
   
   [![Rust](https://img.shields.io/badge/Rust-1.85+-orange.svg)](https://www.rust-lang.org)
@@ -10,18 +10,18 @@
 
 ---
 
-**HackStorage** is a high-performance, dual-transport (Stdio & REST) server written in Rust. It equips Large Language Model (LLM) agents with **persistent memory** and **autonomous offensive reconnaissance capabilities**. 
+**PentaCore** is a high-performance, dual-transport (Stdio & REST) server written in Rust. It equips Large Language Model (LLM) agents with **persistent memory** and **autonomous offensive reconnaissance capabilities**. 
 
-Instead of losing state on every restart or wasting context window tokens re-reading files, agents can store exact findings and retrieve scoped context with a single query. Furthermore, HackStorage drastically reduces token consumption by offloading repetitive recon tasks (like DNS brute-forcing and passive secret extraction) directly into the Rust server.
+Instead of losing state on every restart or wasting context window tokens re-reading files, agents can store exact findings and retrieve scoped context with a single query. Furthermore, PentaCore drastically reduces token consumption by offloading repetitive recon tasks (like DNS brute-forcing and passive secret extraction) directly into the Rust server.
 
-## ⚡ Why HackStorage?
+## ⚡ Why PentaCore?
 
 LLM-based pentest agents suffer from limited context windows and lack of persistence. Every new session starts from zero. 
 
-HackStorage solves this by acting as a shared brain and autonomous assistant:
+PentaCore solves this by acting as a shared brain and autonomous assistant:
 1. **Context Persistence:** One request restores full context. One request saves a finding. No files, no prompt engineering — just data.
-2. **Token Efficiency:** Stop wasting tokens writing one-off Python scripts for DNS enumeration or schema parsing. HackStorage runs it locally, at native speeds, and returns highly-condensed summaries to the AI.
-3. **Passive Intelligence:** HackStorage transparently inspects outgoing HTTP responses for leaked secrets (JWTs, API keys) and alerts the AI automatically.
+2. **Token Efficiency:** Stop wasting tokens writing one-off Python scripts for DNS enumeration or schema parsing. PentaCore runs it locally, at native speeds, and returns highly-condensed summaries to the AI.
+3. **Passive Intelligence:** PentaCore transparently inspects outgoing HTTP responses for leaked secrets (JWTs, API keys) and alerts the AI automatically.
 
 ---
 
@@ -45,23 +45,23 @@ HackStorage solves this by acting as a shared brain and autonomous assistant:
 
 ### Setup
 ```bash
-git clone https://github.com/DroBoV1tya/hackstorage_mcp.git
-cd hackstorage_mcp
+git clone https://github.com/DroBoV1tya/PentaCore_mcp.git
+cd PentaCore_mcp
 
 # Build the release binary
 cargo build --release
 
 # Run as a standalone REST server...
-./target/release/HackStorage
+./target/release/PentaCore
 
 # ...or add it to your Claude Desktop config (claude_desktop_config.json)
 {
   "mcpServers": {
-    "hackstorage": {
-      "command": "/path/to/hackstorage_mcp/target/release/HackStorage",
+    "PentaCore": {
+      "command": "/path/to/PentaCore_mcp/target/release/PentaCore",
       "args": [],
       "env": {
-        "DB_LOCATION": "sqlite:/path/to/hackstorage_mcp/db/mcp.db"
+        "DB_LOCATION": "sqlite:/path/to/PentaCore_mcp/db/mcp.db"
       }
     }
   }
@@ -72,7 +72,7 @@ cargo build --release
 
 ## 📡 Core Tools (MCP Interface)
 
-When connected as an MCP server, HackStorage exposes the following tools directly to the AI:
+When connected as an MCP server, PentaCore exposes the following tools directly to the AI:
 
 - **`make_request`**: Perform HTTP requests (GET/POST/PUT/DELETE) with custom headers, proxy routing, and automatic passive analysis.
 - **`resolve_dns`**: Perform standard public DNS resolution (like `dig` or `nslookup`).
@@ -84,7 +84,7 @@ When connected as an MCP server, HackStorage exposes the following tools directl
 
 ## 🗺️ Roadmap: The Path to Autonomous Pentesting
 
-These upcoming features are designed to transform HackStorage into a deadly, fully autonomous pentest agent, drastically reducing manual AI scripting.
+These upcoming features are designed to transform PentaCore into a deadly, fully autonomous pentest agent, drastically reducing manual AI scripting.
 
 ### 1. Advanced Fuzzing & Wordlists (`smart_fuzz`)
 - **Concept:** Provide a built-in dictionary of the 50-100 most critical endpoints (e.g., `/.git/`, `/.env`, `/api/v1/users`, `/swagger-ui.html`) and subdomains.

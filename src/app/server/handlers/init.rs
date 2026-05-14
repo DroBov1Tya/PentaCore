@@ -15,7 +15,7 @@ pub async fn initialize(
 
 pub async fn instructions() -> Json<serde_json::Value> {
     Json(json!({
-        "name": "hackstorage-mcp",
+        "name": "PentaCore-mcp",
         "version": VERSION,
         "description": "Persistent context store for pentest sessions. Saves tokens by giving structured, queryable memory across sessions. One targeted request returns exactly what you need instead of re-reading files or reconstructing state.",
         "how_to_use": {
