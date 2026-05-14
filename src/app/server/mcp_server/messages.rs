@@ -111,6 +111,56 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     }
                 },
                 {
+                    "name": "memorize_concept",
+                    "description": "Store a concept, text snippet, document, or finding into the RAG memory store for semantic search later.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "The target domain this memory belongs to" },
+                            "category": { "type": "string", "description": "Category of the memory (e.g., 'auth_bypass_idea', 'raw_docs', 'graphql_schema')" },
+                            "title": { "type": "string", "description": "Short, descriptive title" },
+                            "content": { "type": "string", "description": "The actual text/data to memorize" },
+                            "tags": { "type": "array", "items": { "type": "string" }, "description": "Array of tags" }
+                        },
+                        "required": ["domain", "category", "title", "content"]
+                    }
+                },
+                {
+                    "name": "search_knowledge",
+                    "description": "Search the RAG memory store using semantic similarity (LanceDB vector search).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string", "description": "The natural language or code query to search for" },
+                            "domain": { "type": "string", "description": "Optional domain to filter results" },
+                            "limit": { "type": "integer", "description": "Max number of results to return (default 5)" }
+                        },
+                        "required": ["query"]
+                    }
+                },
+                {
+                    "name": "list_memories",
+                    "description": "List stored memories without semantic search. Use this to browse what has been saved.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "Optional domain to filter results" },
+                            "limit": { "type": "integer", "description": "Max number of results to return (default 10)" }
+                        }
+                    }
+                },
+                {
+                    "name": "forget_memory",
+                    "description": "Delete a memory note by ID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "The UUID string of the memory to delete" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
                     "name": "get_endpoints",
                     "description": "List discovered endpoints.",
                     "inputSchema": {

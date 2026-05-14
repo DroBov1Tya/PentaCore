@@ -1,5 +1,4 @@
 use hickory_resolver::Resolver;
-use hickory_resolver::config::ResolverConfig;
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RData;
 use std::sync::Arc;

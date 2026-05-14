@@ -33,3 +33,43 @@ pub async fn upsert(
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
+
+#[derive(Deserialize)]
+pub struct BulkUpsertItem {
+    pub endpoint_id: i64,
+    pub vector: String,
+    pub status: String,
+    pub description: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct BulkUpsertReq {
+    pub items: Vec<BulkUpsertItem>,
+}
+
+pub async fn bulk_upsert(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<BulkUpsertReq>,
+) -> Json<serde_json::Value> {
+    let mut ok = 0u32;
+    let mut errors = Vec::new();
+    
+    for item in input.items {
+        let upsert_input = db::UpsertCoverage {
+            vector: item.vector,
+            status: item.status,
+            description: item.description,
+            notes: item.notes,
+        };
+        match db::upsert(&state.db, item.endpoint_id, &upsert_input).await {
+            Ok(_) => ok += 1,
+            Err(e) => errors.push(format!("endpoint_id {}: {}", item.endpoint_id, e)),
+        }
+    }
+    
+    Json(serde_json::json!({
+        "ok": ok,
+        "errors": errors
+    }))
+}

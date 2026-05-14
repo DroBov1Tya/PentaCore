@@ -6,18 +6,21 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
 
 mod client;
-pub mod database;
+mod database;
+pub mod rag;
 mod server;
 
+use rag::store::MemoryStore;
 use server::mcp_server;
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: &'static Config,
     pub db: Pool<Sqlite>,
+    pub memory_store: Arc<Mutex<MemoryStore>>,
     pub shutdown: broadcast::Sender<()>,
 }
 
@@ -39,7 +42,16 @@ impl Application {
         let db = database::pool::init_pool(cfg.db_location.as_str()).await?;
         let (shutdown, _) = broadcast::channel(1);
 
-        let state = Arc::new(AppState { cfg, db, shutdown });
+        tracing::info!("🧠 Initializing embedded RAG memory (fastembed + lancedb)...");
+        let lancedb_path = cfg.db_location.replace("mcp.db", "mcp_lancedb");
+        let memory_store = Arc::new(Mutex::new(MemoryStore::new(lancedb_path.replace("sqlite:", "").as_str()).await?));
+
+        let state = Arc::new(AppState {
+            cfg,
+            db,
+            memory_store,
+            shutdown,
+        });
 
         Ok(Self { state })
     }

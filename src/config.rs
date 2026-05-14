@@ -6,7 +6,8 @@ pub fn init_logger() {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
-                .with_target(false),
+                .with_target(false)
+                .with_ansi(false),
         )
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
