@@ -29,7 +29,7 @@ pub async fn list(
 ) -> sqlx::Result<Vec<EndpointRow>> {
     let sql = r#"
         SELECT e.id, e.method, e.path, e.status_code,
-               CAST(e.auth AS BOOLEAN) AS "auth: bool",
+               e.auth,
                e.description, e.notes
         FROM endpoints e
         JOIN targets t ON t.id = e.target_id

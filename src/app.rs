@@ -1,5 +1,4 @@
 use crate::{
-    api,
     config::{self, Config},
 };
 use anyhow::Result;
@@ -12,8 +11,10 @@ use tokio::signal;
 use tokio::sync::broadcast;
 
 pub mod database;
+mod client;
+mod server;
 
-use api::mcp_server;
+use server::mcp_server;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -52,7 +53,7 @@ impl Application {
         let server_state = Arc::clone(&self.state);
         let mcp_state = Arc::clone(&self.state);
 
-        let server_handle = tokio::spawn(async move { api::server::start(server_state).await });
+        let server_handle = tokio::spawn(async move { server::server::start(server_state).await });
         let mcp_handle = tokio::spawn(async move { mcp_server::start(mcp_state).await });
 
         tracing::info!("✅ Application ready");
