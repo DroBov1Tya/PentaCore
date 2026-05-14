@@ -279,6 +279,24 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     }
                 },
                 {
+                    "name": "get_proxies",
+                    "description": "List proxies for a target.",
+                    "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
+                },
+                {
+                    "name": "save_proxy",
+                    "description": "Save a proxy.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" }, "url": { "type": "string" },
+                            "type": { "type": "string", "enum": ["http", "socks5", "burp"] },
+                            "active": { "type": "integer" }, "description": { "type": "string" }, "notes": { "type": "string" }
+                        },
+                        "required": ["domain", "url", "type"]
+                    }
+                },
+                {
                     "name": "get_credentials",
                     "description": "List credentials.",
                     "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }

@@ -102,6 +102,8 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
         "save_chain" => handlers::vulns::handle_save_chain(args, state).await,
         "get_chain_steps" => handlers::vulns::handle_get_chain_steps(args, state).await,
         "add_chain_step" => handlers::vulns::handle_add_chain_step(args, state).await,
+        "get_proxies" => handlers::proxies::handle_get_proxies(args, state).await,
+        "save_proxy" => handlers::proxies::handle_save_proxy(args, state).await,
         "set_session" => handlers::client::handle_set_session(args, state).await,
         "revoke_session" => handlers::client::handle_revoke_session(args, state).await,
         "make_request" => handlers::client::handle_make_request(args, state).await,

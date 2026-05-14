@@ -9,3 +9,4 @@ pub mod scope;
 pub mod summary;
 pub mod target_relations;
 pub mod test_objects;
+pub mod proxies;

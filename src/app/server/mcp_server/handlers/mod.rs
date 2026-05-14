@@ -6,3 +6,4 @@ pub mod client;
 pub mod coverage_requests;
 pub mod test_objects;
 pub mod parsers;
+pub mod proxies;
