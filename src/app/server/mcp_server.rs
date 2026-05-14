@@ -92,6 +92,8 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
         "search_knowledge" => handlers::rag::handle_search_knowledge(args, state).await,
         "list_memories" => handlers::rag::handle_list_memories(args, state).await,
         "forget_memory" => handlers::rag::handle_forget_memory(args, state).await,
+        "get_memory" => handlers::rag::handle_get_memory(args, state).await,
+        "update_memory" => handlers::rag::handle_update_memory(args, state).await,
         "get_findings" => handlers::vulns::handle_get_findings(args, state).await,
         "save_finding" => handlers::vulns::handle_save_finding(args, state).await,
         "get_credentials" => handlers::vulns::handle_get_credentials(args, state).await,

@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/targets/{domain}/rag/memorize", post(rag::memorize))
         .route("/rag/search", get(rag::search))
         .route("/rag/memories", get(rag::list_memories))
-        .route("/rag/memories/{id}", delete(rag::forget))
+        .route("/rag/memories/{id}", get(rag::get_memory).put(rag::update_memory).delete(rag::forget))
         .route(
             "/targets/{domain}/relations",
             get(target_relations::list).post(target_relations::create),

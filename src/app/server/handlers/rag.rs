@@ -95,3 +95,41 @@ pub async fn forget(
         Err(e) => Err(e.to_string()),
     }
 }
+
+pub async fn get_memory(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::app::rag::types::MemoryNote>, String> {
+    let store = state.memory_store.lock().await;
+    match store.get_memory(&id).await {
+        Ok(Some(mem)) => Ok(Json(mem)),
+        Ok(None) => Err(format!("Memory with id {} not found", id)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateMemoryReq {
+    pub category: Option<String>,
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+pub async fn update_memory(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateMemoryReq>,
+) -> Result<Json<ForgetResp>, String> {
+    let mut store = state.memory_store.lock().await;
+    match store.update_memory(
+        &id,
+        payload.category.as_deref(),
+        payload.title.as_deref(),
+        payload.content.as_deref(),
+        payload.tags.as_deref(),
+    ).await {
+        Ok(_) => Ok(Json(ForgetResp { success: true })),
+        Err(e) => Err(e.to_string()),
+    }
+}

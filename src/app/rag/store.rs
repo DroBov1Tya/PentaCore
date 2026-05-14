@@ -14,21 +14,27 @@ use super::types::{MemoryNote, SearchResult};
 pub struct MemoryStore {
     db: Connection,
     table_name: String,
-    embedder: LocalEmbedder,
+    embedder: Option<LocalEmbedder>,
 }
 
 impl MemoryStore {
     pub async fn new(db_path: &str) -> Result<Self> {
-        let embedder = LocalEmbedder::new()?;
-        
         let db = lancedb::connect(db_path).execute().await?;
         let table_name = "memories".to_string();
 
         Ok(Self {
             db,
             table_name,
-            embedder,
+            embedder: None,
         })
+    }
+
+    fn get_embedder(&mut self) -> Result<&mut LocalEmbedder> {
+        if self.embedder.is_none() {
+            tracing::info!("Initializing fastembed ONNX model on first use...");
+            self.embedder = Some(LocalEmbedder::new()?);
+        }
+        Ok(self.embedder.as_mut().unwrap())
     }
 
     async fn get_or_create_table(&self) -> Result<Table> {
@@ -70,7 +76,7 @@ impl MemoryStore {
         let table = self.get_or_create_table().await?;
         
         let embed_text = format!("{} — {}", title, content);
-        let vector = self.embedder.embed(&embed_text)?;
+        let vector = self.get_embedder()?.embed(&embed_text)?;
         let tags_json = serde_json::to_string(tags)?;
         let id = Uuid::new_v4().to_string();
 
@@ -115,7 +121,7 @@ impl MemoryStore {
             return Ok(SearchResult { query: query.to_string(), results: vec![], total_memories: 0 });
         }
 
-        let query_vector = self.embedder.embed(query)?;
+        let query_vector = self.get_embedder()?.embed(query)?;
         let total_memories = table.count_rows(None).await? as i64;
 
         let mut q = table.query().nearest_to(query_vector.as_slice())?;
@@ -153,6 +159,12 @@ impl MemoryStore {
                     .and_then(|c| c.as_any().downcast_ref::<arrow_array::Float32Array>())
                     .map(|arr| arr.value(i) as f64);
 
+                if let Some(d) = dist {
+                    if d > 0.8 {
+                        continue;
+                    }
+                }
+
                 results.push(MemoryNote {
                     id: Some(ids.value(i).to_string()),
                     domain: domains.value(i).to_string(),
@@ -163,6 +175,14 @@ impl MemoryStore {
                     score: dist,
                 });
             }
+        }
+
+        if results.is_empty() {
+            return Ok(SearchResult {
+                query: query.to_string(),
+                results: vec![],
+                total_memories,
+            });
         }
 
         Ok(SearchResult {
@@ -219,6 +239,93 @@ impl MemoryStore {
         }
 
         Ok(results)
+    }
+
+    pub async fn get_memory(&self, memory_id: &str) -> Result<Option<MemoryNote>> {
+        let table = self.get_or_create_table().await?;
+        let batches: Vec<RecordBatch> = table.query()
+            .only_if(format!("id = '{}'", memory_id))
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        for batch in batches {
+            if batch.num_rows() > 0 {
+                let ids = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+                let domains = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+                let cats = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+                let titles = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
+                let contents = batch.column(4).as_any().downcast_ref::<StringArray>().unwrap();
+                let tags = batch.column(5).as_any().downcast_ref::<StringArray>().unwrap();
+
+                let parsed_tags: Vec<String> = serde_json::from_str(tags.value(0)).unwrap_or_default();
+
+                return Ok(Some(MemoryNote {
+                    id: Some(ids.value(0).to_string()),
+                    domain: domains.value(0).to_string(),
+                    category: cats.value(0).to_string(),
+                    title: titles.value(0).to_string(),
+                    content: contents.value(0).to_string(),
+                    tags: parsed_tags,
+                    score: None,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn update_memory(
+        &mut self,
+        memory_id: &str,
+        category: Option<&str>,
+        title: Option<&str>,
+        content: Option<&str>,
+        tags: Option<&[String]>,
+    ) -> Result<()> {
+        let existing = self.get_memory(memory_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Memory with id {} not found", memory_id))?;
+
+        let new_cat = category.unwrap_or(&existing.category);
+        let new_title = title.unwrap_or(&existing.title);
+        let new_content = content.unwrap_or(&existing.content);
+        let new_tags = tags.unwrap_or(&existing.tags);
+
+        self.forget(memory_id).await?;
+        
+        let table = self.get_or_create_table().await?;
+        let embed_text = format!("{} — {}", new_title, new_content);
+        let vector = self.get_embedder()?.embed(&embed_text)?;
+        let tags_json = serde_json::to_string(new_tags)?;
+
+        let schema = table.schema().await?;
+        
+        let id_arr = StringArray::from(vec![memory_id.to_string()]);
+        let domain_arr = StringArray::from(vec![existing.domain.as_str()]);
+        let cat_arr = StringArray::from(vec![new_cat]);
+        let title_arr = StringArray::from(vec![new_title]);
+        let content_arr = StringArray::from(vec![new_content]);
+        let tags_arr = StringArray::from(vec![tags_json]);
+        
+        let vec_opt: Vec<Option<Vec<Option<f32>>>> = vec![Some(vector.into_iter().map(Some).collect())];
+        let vector_arr = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(vec_opt, 384);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(id_arr),
+                Arc::new(domain_arr),
+                Arc::new(cat_arr),
+                Arc::new(title_arr),
+                Arc::new(content_arr),
+                Arc::new(tags_arr),
+                Arc::new(vector_arr),
+            ],
+        )?;
+
+        table.add(vec![batch]).execute().await?;
+        Ok(())
     }
 
     pub async fn forget(&self, memory_id: &str) -> Result<()> {

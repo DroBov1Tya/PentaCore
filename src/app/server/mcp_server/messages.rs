@@ -161,6 +161,32 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     }
                 },
                 {
+                    "name": "get_memory",
+                    "description": "Retrieve a single memory by ID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "The UUID string of the memory" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "update_memory",
+                    "description": "Update an existing memory by ID. Only provided fields are updated.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "The UUID of the memory to update" },
+                            "category": { "type": "string" },
+                            "title": { "type": "string" },
+                            "content": { "type": "string" },
+                            "tags": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
                     "name": "get_endpoints",
                     "description": "List discovered endpoints.",
                     "inputSchema": {

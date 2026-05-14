@@ -43,7 +43,7 @@ impl Application {
         let (shutdown, _) = broadcast::channel(1);
 
         tracing::info!("🧠 Initializing embedded RAG memory (fastembed + lancedb)...");
-        let lancedb_path = cfg.db_location.replace("mcp.db", "mcp_lancedb");
+        let lancedb_path = cfg.db_location.replace("mcp.db", ".lancedb");
         let memory_store = Arc::new(Mutex::new(MemoryStore::new(lancedb_path.replace("sqlite:", "").as_str()).await?));
 
         let state = Arc::new(AppState {

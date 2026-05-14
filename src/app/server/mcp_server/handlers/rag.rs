@@ -58,3 +58,40 @@ pub async fn handle_forget_memory(args: &Value, state: &Arc<AppState>) -> String
         Err(e) => format!("Error deleting memory: {}", e),
     }
 }
+
+pub async fn handle_get_memory(args: &Value, state: &Arc<AppState>) -> String {
+    let id = args["id"].as_str().unwrap_or("");
+    if id.is_empty() {
+        return "Error: id is required".to_string();
+    }
+
+    let store = state.memory_store.lock().await;
+    match store.get_memory(id).await {
+        Ok(Some(mem)) => serde_json::to_string_pretty(&mem).unwrap_or_default(),
+        Ok(None) => format!("Memory with id {} not found", id),
+        Err(e) => format!("Error retrieving memory: {}", e),
+    }
+}
+
+pub async fn handle_update_memory(args: &Value, state: &Arc<AppState>) -> String {
+    let id = args["id"].as_str().unwrap_or("");
+    if id.is_empty() {
+        return "Error: id is required".to_string();
+    }
+
+    let category = args["category"].as_str();
+    let title = args["title"].as_str();
+    let content = args["content"].as_str();
+    
+    let tags_vec: Option<Vec<String>> = args["tags"].as_array().map(|v| {
+        v.iter()
+            .filter_map(|s| s.as_str().map(String::from))
+            .collect()
+    });
+    
+    let mut store = state.memory_store.lock().await;
+    match store.update_memory(id, category, title, content, tags_vec.as_deref()).await {
+        Ok(_) => format!("Memory {} updated successfully.", id),
+        Err(e) => format!("Error updating memory: {}", e),
+    }
+}
