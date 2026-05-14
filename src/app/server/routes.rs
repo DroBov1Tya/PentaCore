@@ -1,12 +1,12 @@
 use axum::{
     Router,
-    routing::{get, post, delete},
+    routing::{delete, get, post},
 };
 use std::sync::Arc;
 
 use super::handlers::{
-    attack_chains, client, coverage, credentials, endpoints, findings, init, requests, scope, summary,
-    target_relations,
+    attack_chains, client, coverage, credentials, endpoints, findings, init, requests, scope,
+    summary, target_relations,
 };
 use crate::app::AppState;
 
@@ -50,7 +50,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/endpoints/{endpoint_id}/coverage",
             get(coverage::list).post(coverage::upsert),
         )
-        .route("/client/session", post(client::set_session).delete(client::revoke_session))
+        .route(
+            "/client/session",
+            post(client::set_session).delete(client::revoke_session),
+        )
         .route("/client/request", post(client::make_request_handler))
         .route("/client/race", post(client::make_race_requests_handler))
         .with_state(state)

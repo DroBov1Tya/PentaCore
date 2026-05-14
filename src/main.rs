@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 use anyhow::{Ok, Result};
 
 mod app;

@@ -138,3 +138,31 @@ CREATE INDEX IF NOT EXISTS idx_coverage_endpoint     ON coverage(endpoint_id, st
 CREATE INDEX IF NOT EXISTS idx_credentials_target    ON credentials(target_id);
 CREATE INDEX IF NOT EXISTS idx_chain_steps_chain     ON chain_steps(chain_id, step_order);
 CREATE INDEX IF NOT EXISTS idx_attack_chains_target  ON attack_chains(target_id, severity);
+
+CREATE TABLE IF NOT EXISTS test_objects (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id       INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    object_type     TEXT NOT NULL,
+    object_id       TEXT NOT NULL,
+    description     TEXT,
+    rollback_method TEXT,
+    rollback_url    TEXT,
+    rollback_body   TEXT,
+    status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active','rolled_back','orphaned')),
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS endpoint_examples (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint_id     INTEGER NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+    raw_request     TEXT NOT NULL,
+    raw_response    TEXT,
+    status_code     INTEGER,
+    description     TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(endpoint_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_objects_target ON test_objects(target_id, status);
+CREATE INDEX IF NOT EXISTS idx_endpoint_examples   ON endpoint_examples(endpoint_id);

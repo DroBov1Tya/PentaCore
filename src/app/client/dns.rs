@@ -104,10 +104,9 @@ pub async fn enumerate_subdomains(domain: &str) -> Vec<String> {
 
 pub async fn resolve_dns(domain: &str) -> Vec<String> {
     let (config, _) = hickory_resolver::system_conf::read_system_conf().unwrap();
-    let resolver =
-        Resolver::builder_with_config(config, TokioRuntimeProvider::default())
-            .build()
-            .unwrap();
+    let resolver = Resolver::builder_with_config(config, TokioRuntimeProvider::default())
+        .build()
+        .unwrap();
 
     let mut results = Vec::new();
 
@@ -190,7 +189,7 @@ mod tests {
         for res in resolved {
             println!("{}", res);
         }
-        
+
         println!("\nTesting enumerate_subdomains on {}...", domain);
         let subs = enumerate_subdomains(domain).await;
         for sub in subs {

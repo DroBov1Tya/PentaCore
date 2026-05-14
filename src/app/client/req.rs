@@ -1,11 +1,14 @@
 use anyhow::Result;
-use reqwest::{Client, Method, header::{HeaderMap, HeaderValue, COOKIE, AUTHORIZATION, USER_AGENT}};
-use rand::seq::SliceRandom;
 use rand::prelude::IndexedRandom;
+use rand::seq::SliceRandom;
+use reqwest::{
+    Client, Method,
+    header::{AUTHORIZATION, COOKIE, HeaderMap, HeaderValue, USER_AGENT},
+};
 
 use super::sessions::load_session;
 
-pub struct PreRequest{
+pub struct PreRequest {
     pub cookie: Vec<String>,
     pub method: String,
     pub url: String,

@@ -103,6 +103,21 @@ These upcoming features are designed to transform HackStorage into a deadly, ful
 - **Concept:** Verify XSS automatically.
 - **Feature:** Spin up a headless browser (Puppeteer/Playwright wrapper), inject the payload, and capture a screenshot of the `alert()` execution as PoC.
 
+### 5. Automated Workflow Orchestration
+- **`get_next_targets`:** Smart routing to retrieve endpoints with missing or low test coverage, filterable by `state_changing`, `auth_required`, `service`, and `risk`.
+- **`bulk_upsert_coverage` & `bulk_save_requests`:** Batch processing tools to eliminate the latency of logging findings one by one.
+- **`safe_rate_limiter`:** Built-in rate limiting for `make_request` and `make_race_requests` to ensure safe operation without relying on AI prompt discipline.
+
+### 6. Vulnerability & Object Management
+- **`diff_requests`:** Native comparison of two HTTP responses (status, size, headers, JSON structure) to automatically flag IDORs or Blind injections.
+- **`claim_test_object`:** A registry for artifacts created during testing (e.g., test users, mock posts) linked with a `rollback_command` for machine-verifiable cleanup.
+- **`redact_secret_fields`:** Automatic redaction of auth tokens, cookies, and passwords from saved HTTP evidence to ensure report cleanliness.
+
+### 7. OAST & Reporting
+- **`oast_session`:** Out-of-Band Application Security Testing support via generated markers, polling mechanisms, and callback binding to specific `request_id`s (for Blind SSRF/XSS).
+- **`report_export`:** One-click generation of comprehensive Markdown/JSON pentest reports synthesizing findings, requests, coverage, and attack chains.
+- **`endpoint_examples`:** Automatic retention of the smallest valid request/response pair for each endpoint to serve as functional documentation.
+
 *(Note: Network port scanning is deferred, as dedicated tools like RustScan/Nmap are better suited for network-level operations.)*
 
 ---

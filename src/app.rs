@@ -1,6 +1,4 @@
-use crate::{
-    config::{self, Config},
-};
+use crate::config::{self, Config};
 use anyhow::Result;
 use colored::*;
 use sqlx::{Pool, Sqlite};
@@ -10,8 +8,8 @@ use std::time::Duration;
 use tokio::signal;
 use tokio::sync::broadcast;
 
-pub mod database;
 mod client;
+pub mod database;
 mod server;
 
 use server::mcp_server;

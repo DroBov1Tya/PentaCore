@@ -1,4 +1,4 @@
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use crate::constants::{VERSION, VERSION_DATE};
 
 pub async fn initialize(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<serde_json::Value>
+    Json(req): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let resp = crate::app::server::mcp_server::handle_request(&req, &state).await;
     Json(resp)

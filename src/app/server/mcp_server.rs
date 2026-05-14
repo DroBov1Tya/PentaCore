@@ -5,8 +5,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::app::AppState;
 use crate::app::database::queries::{
-    attack_chains, coverage, credentials, endpoints, findings, requests, scope, summary,
-    target_relations,
+    attack_chains, coverage, credentials, endpoint_examples, endpoints, findings, requests, scope,
+    summary, target_relations, test_objects,
 };
 
 mod messages;
@@ -260,26 +260,38 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
             }
         }
         "set_session" => {
-            let cookies = args["cookies"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()).unwrap_or_default();
+            let cookies = args["cookies"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let auth_token = args["auth_token"].as_str().map(String::from);
             match crate::app::client::sessions::save_session(cookies, auth_token).await {
                 Ok(_) => "Session state saved successfully.".to_string(),
                 Err(e) => format!("Error saving session: {}", e),
             }
         }
-        "revoke_session" => {
-            match crate::app::client::sessions::remove_session().await {
-                Ok(_) => "Session state revoked successfully.".to_string(),
-                Err(e) => format!("Error revoking session: {}", e),
-            }
-        }
+        "revoke_session" => match crate::app::client::sessions::remove_session().await {
+            Ok(_) => "Session state revoked successfully.".to_string(),
+            Err(e) => format!("Error revoking session: {}", e),
+        },
         "make_request" => {
             let method = args["method"].as_str().unwrap_or("GET").to_string();
             let url = args["url"].as_str().unwrap_or("").to_string();
             let body = args["body"].as_str().unwrap_or("").to_string();
             let proxy = args["proxy"].as_str().map(String::from);
             let user_agent = args["user_agent"].as_str().map(String::from);
-            let cookies = args["cookies"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()).unwrap_or_default();
+            let cookies = args["cookies"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let endpoint_id = args["endpoint_id"].as_i64();
 
             let prereq = crate::app::client::req::PreRequest {
@@ -291,12 +303,17 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
                 user_agent,
             };
 
-            let req_str = format!("{} {}\nBody: {}", method, url, if body.is_empty() { "[empty]" } else { &body });
+            let req_str = format!(
+                "{} {}\nBody: {}",
+                method,
+                url,
+                if body.is_empty() { "[empty]" } else { &body }
+            );
             match crate::app::client::req::make_req(prereq).await {
                 Ok(resp) => {
                     let status = resp.status().as_u16() as i64;
                     let resp_text = resp.text().await.unwrap_or_default();
-                    
+
                     if let Some(eid) = endpoint_id {
                         let req_input = requests::CreateRequest {
                             raw_request: req_str.clone(),
@@ -308,34 +325,44 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
                         };
                         let _ = requests::create(&state.db, eid, &req_input).await;
                     }
-                    
+
                     let mut hint = if status == 401 || status == 403 {
                         "\n\n[HINT]: The request returned 401/403. This may indicate an expired session or missing tokens. You can use 'revoke_session' to clear invalid session state, and try to re-authenticate.".to_string()
-                    } else { 
-                        "".to_string() 
+                    } else {
+                        "".to_string()
                     };
-                    
-                    if let Some(recon_hint) = crate::app::client::recon::analyze_response(&resp_text) {
+
+                    if let Some(recon_hint) =
+                        crate::app::client::recon::analyze_response(&resp_text)
+                    {
                         hint.push_str(&recon_hint);
                     }
-                    
+
                     format!("Status: {}{}\n\n{}", status, hint, resp_text)
-                },
+                }
                 Err(e) => format!("Request error: {}", e),
             }
         }
         "resolve_dns" => {
             let domain = args["domain"].as_str().unwrap_or("").to_string();
-            if domain.is_empty() { return "Error: domain is required".to_string(); }
+            if domain.is_empty() {
+                return "Error: domain is required".to_string();
+            }
             let results = crate::app::client::dns::resolve_dns(&domain).await;
-            format!("DNS Resolution Results for {}:\n{}", domain, results.join("\n"))
+            format!(
+                "DNS Resolution Results for {}:\n{}",
+                domain,
+                results.join("\n")
+            )
         }
         "enumerate_subdomains" => {
             let domain = args["domain"].as_str().unwrap_or("").to_string();
-            if domain.is_empty() { return "Error: domain is required".to_string(); }
-            
+            if domain.is_empty() {
+                return "Error: domain is required".to_string();
+            }
+
             let results = crate::app::client::dns::enumerate_subdomains(&domain).await;
-            
+
             for res in &results {
                 if let Some(sub) = res.split(" ->").next() {
                     let rel = target_relations::CreateRelation {
@@ -346,8 +373,12 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
                     let _ = target_relations::create(&state.db, &domain, &rel).await;
                 }
             }
-            
-            format!("Subdomain Enumeration Results:\nFound {} subdomains:\n{}", results.len(), results.join("\n"))
+
+            format!(
+                "Subdomain Enumeration Results:\nFound {} subdomains:\n{}",
+                results.len(),
+                results.join("\n")
+            )
         }
         "make_race_requests" => {
             let method = args["method"].as_str().unwrap_or("GET").to_string();
@@ -355,13 +386,20 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
             let body = args["body"].as_str().unwrap_or("").to_string();
             let count = args["count"].as_i64().unwrap_or(5).clamp(1, 100) as usize;
             let threads = args["threads"].as_i64().unwrap_or(5).clamp(1, 20) as usize;
-            let cookies = args["cookies"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>()).unwrap_or_default();
+            let cookies = args["cookies"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let user_agent = args["user_agent"].as_str().map(String::from);
             let proxy = args["proxy"].as_str().map(String::from);
-            
+
             let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(threads));
             let mut handles = Vec::new();
-            
+
             for _ in 0..count {
                 let prereq = crate::app::client::req::PreRequest {
                     cookie: cookies.clone(),
@@ -377,7 +415,7 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
                     crate::app::client::req::make_req(prereq).await
                 }));
             }
-            
+
             let mut summary = String::new();
             for (i, handle) in handles.into_iter().enumerate() {
                 match handle.await {
@@ -389,7 +427,282 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
                     Err(e) => summary.push_str(&format!("Request {}: Task Panic {}\n", i + 1, e)),
                 }
             }
-            format!("Race Condition Test Results ({} total requests, {} concurrent threads):\n{}", count, threads, summary)
+            format!(
+                "Race Condition Test Results ({} total requests, {} concurrent threads):\n{}",
+                count, threads, summary
+            )
+        }
+        "diff_requests" => {
+            let id_a = args["request_id_a"].as_i64().unwrap_or(0);
+            let id_b = args["request_id_b"].as_i64().unwrap_or(0);
+            if id_a == 0 || id_b == 0 {
+                return "Error: request_id_a and request_id_b are required".to_string();
+            }
+
+            let req_a =
+                sqlx::query_as::<_, requests::RequestRow>("SELECT * FROM requests WHERE id = ?")
+                    .bind(id_a)
+                    .fetch_optional(&state.db)
+                    .await;
+
+            let req_b =
+                sqlx::query_as::<_, requests::RequestRow>("SELECT * FROM requests WHERE id = ?")
+                    .bind(id_b)
+                    .fetch_optional(&state.db)
+                    .await;
+
+            match (req_a, req_b) {
+                (Ok(Some(a)), Ok(Some(b))) => {
+                    let mut diff = Vec::new();
+
+                    // Status code
+                    match (a.status_code, b.status_code) {
+                        (Some(sa), Some(sb)) if sa != sb => {
+                            diff.push(format!("STATUS: {} vs {}", sa, sb))
+                        }
+                        _ => {}
+                    }
+
+                    // Response size
+                    let size_a = a.raw_response.as_ref().map(|r| r.len()).unwrap_or(0);
+                    let size_b = b.raw_response.as_ref().map(|r| r.len()).unwrap_or(0);
+                    if size_a != size_b {
+                        diff.push(format!(
+                            "SIZE: {} bytes vs {} bytes (delta: {})",
+                            size_a,
+                            size_b,
+                            (size_b as i64 - size_a as i64)
+                        ));
+                    }
+
+                    // Response time
+                    match (a.response_time_ms, b.response_time_ms) {
+                        (Some(ta), Some(tb)) if ta != tb => {
+                            diff.push(format!("TIME: {}ms vs {}ms", ta, tb))
+                        }
+                        _ => {}
+                    }
+
+                    // JSON structure diff
+                    let body_a = a.raw_response.as_deref().unwrap_or("");
+                    let body_b = b.raw_response.as_deref().unwrap_or("");
+                    if let (Ok(ja), Ok(jb)) = (
+                        serde_json::from_str::<Value>(body_a),
+                        serde_json::from_str::<Value>(body_b),
+                    ) {
+                        if let (Some(oa), Some(ob)) = (ja.as_object(), jb.as_object()) {
+                            let keys_a: std::collections::HashSet<_> = oa.keys().collect();
+                            let keys_b: std::collections::HashSet<_> = ob.keys().collect();
+                            let only_a: Vec<_> = keys_a.difference(&keys_b).collect();
+                            let only_b: Vec<_> = keys_b.difference(&keys_a).collect();
+                            if !only_a.is_empty() {
+                                diff.push(format!("JSON keys only in A: {:?}", only_a));
+                            }
+                            if !only_b.is_empty() {
+                                diff.push(format!("JSON keys only in B: {:?}", only_b));
+                            }
+                            for key in keys_a.intersection(&keys_b) {
+                                if oa[*key] != ob[*key] {
+                                    diff.push(format!("JSON field '{}' differs", key));
+                                }
+                            }
+                        }
+                    }
+
+                    if diff.is_empty() {
+                        format!(
+                            "Diff: Responses are identical (request {} vs {})",
+                            id_a, id_b
+                        )
+                    } else {
+                        format!("Diff (request {} vs {}):\n{}", id_a, id_b, diff.join("\n"))
+                    }
+                }
+                _ => "Error: one or both request IDs not found".to_string(),
+            }
+        }
+        "claim_test_object" => {
+            let input = test_objects::ClaimTestObject {
+                object_type: args["object_type"].as_str().unwrap_or("").to_string(),
+                object_id: args["object_id"].as_str().unwrap_or("").to_string(),
+                description: args["description"].as_str().map(String::from),
+                rollback_method: args["rollback_method"].as_str().map(String::from),
+                rollback_url: args["rollback_url"].as_str().map(String::from),
+                rollback_body: args["rollback_body"].as_str().map(String::from),
+            };
+            match test_objects::claim(&state.db, domain, &input).await {
+                Ok(id) => format!(
+                    "Test object claimed. ID: {}. Remember to rollback after testing.",
+                    id
+                ),
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        "rollback_test_object" => {
+            let obj_id = args["id"].as_i64().unwrap_or(0);
+            if obj_id == 0 {
+                return "Error: id is required".to_string();
+            }
+
+            match test_objects::rollback(&state.db, obj_id).await {
+                Ok(Some(obj)) => {
+                    if obj.rollback_method.is_some() && obj.rollback_url.is_some() {
+                        let prereq = crate::app::client::req::PreRequest {
+                            cookie: vec![],
+                            method: obj.rollback_method.unwrap(),
+                            url: obj.rollback_url.unwrap(),
+                            body: obj.rollback_body.unwrap_or_default(),
+                            proxy: None,
+                            user_agent: None,
+                        };
+                        match crate::app::client::req::make_req(prereq).await {
+                            Ok(resp) => format!(
+                                "Rollback executed. HTTP {}. Object {} marked as rolled_back.",
+                                resp.status().as_u16(),
+                                obj_id
+                            ),
+                            Err(e) => format!(
+                                "Rollback request failed: {}. Object marked as rolled_back anyway.",
+                                e
+                            ),
+                        }
+                    } else {
+                        format!(
+                            "Object {} marked as rolled_back. No rollback URL was configured — manual cleanup may be needed.",
+                            obj_id
+                        )
+                    }
+                }
+                Ok(None) => format!("Error: test object with id {} not found", obj_id),
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        "get_test_objects" => {
+            let status_filter = args["status"].as_str();
+            match test_objects::list(&state.db, domain, status_filter).await {
+                Ok(s) => serde_json::to_string_pretty(&s).unwrap_or_default(),
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        "bulk_upsert_coverage" => {
+            let items = match args["items"].as_array() {
+                Some(arr) => arr,
+                None => return "Error: 'items' must be an array of {endpoint_id, vector, status, description?, notes?}".to_string(),
+            };
+            let mut ok = 0u32;
+            let mut errors = Vec::new();
+            for item in items {
+                let eid = item["endpoint_id"].as_i64().unwrap_or(0);
+                let input = coverage::UpsertCoverage {
+                    vector: item["vector"].as_str().unwrap_or("").to_string(),
+                    status: item["status"].as_str().unwrap_or("pending").to_string(),
+                    description: item["description"].as_str().map(String::from),
+                    notes: item["notes"].as_str().map(String::from),
+                };
+                match coverage::upsert(&state.db, eid, &input).await {
+                    Ok(_) => ok += 1,
+                    Err(e) => errors.push(format!("endpoint_id {}: {}", eid, e)),
+                }
+            }
+            if errors.is_empty() {
+                format!("Bulk coverage: {} items upserted successfully.", ok)
+            } else {
+                format!(
+                    "Bulk coverage: {} ok, {} errors:\n{}",
+                    ok,
+                    errors.len(),
+                    errors.join("\n")
+                )
+            }
+        }
+        "bulk_save_requests" => {
+            let items = match args["items"].as_array() {
+                Some(arr) => arr,
+                None => return "Error: 'items' must be an array of {endpoint_id, raw_request, raw_response?, status_code?, description?}".to_string(),
+            };
+            let mut ok = 0u32;
+            let mut ids = Vec::new();
+            let mut errors = Vec::new();
+            for item in items {
+                let eid = item["endpoint_id"].as_i64().unwrap_or(0);
+                let input = requests::CreateRequest {
+                    raw_request: item["raw_request"].as_str().unwrap_or("").to_string(),
+                    raw_response: item["raw_response"].as_str().map(String::from),
+                    status_code: item["status_code"].as_i64(),
+                    response_time_ms: item["response_time_ms"].as_i64(),
+                    description: item["description"].as_str().map(String::from),
+                    notes: item["notes"].as_str().map(String::from),
+                };
+                match requests::create(&state.db, eid, &input).await {
+                    Ok(id) => {
+                        ok += 1;
+                        ids.push(id.to_string());
+                    }
+                    Err(e) => errors.push(format!("endpoint_id {}: {}", eid, e)),
+                }
+            }
+            if errors.is_empty() {
+                format!("Bulk requests: {} saved. IDs: [{}]", ok, ids.join(", "))
+            } else {
+                format!(
+                    "Bulk requests: {} ok, {} errors:\n{}",
+                    ok,
+                    errors.len(),
+                    errors.join("\n")
+                )
+            }
+        }
+        "save_endpoint_example" => {
+            let input = endpoint_examples::SaveExample {
+                raw_request: args["raw_request"].as_str().unwrap_or("").to_string(),
+                raw_response: args["raw_response"].as_str().map(String::from),
+                status_code: args["status_code"].as_i64(),
+                description: args["description"].as_str().map(String::from),
+            };
+            match endpoint_examples::upsert(&state.db, endpoint_id, &input).await {
+                Ok(id) => format!("Endpoint example saved. ID: {}", id),
+                Err(e) => format!("Error: {}", e),
+            }
+        }
+        "get_endpoint_example" => match endpoint_examples::get(&state.db, endpoint_id).await {
+            Ok(Some(ex)) => serde_json::to_string_pretty(&ex).unwrap_or_default(),
+            Ok(None) => "No example saved for this endpoint yet.".to_string(),
+            Err(e) => format!("Error: {}", e),
+        },
+        "parse_api_spec" => {
+            let spec_url = args["url"].as_str().unwrap_or("");
+            let spec_json = args["json"].as_str().unwrap_or("");
+
+            if spec_url.is_empty() && spec_json.is_empty() {
+                return "Error: either 'url' or 'json' must be provided.".to_string();
+            }
+
+            let json_content = if !spec_url.is_empty() {
+                let prereq = crate::app::client::req::PreRequest {
+                    cookie: vec![],
+                    method: "GET".to_string(),
+                    url: spec_url.to_string(),
+                    body: "".to_string(),
+                    proxy: None,
+                    user_agent: None,
+                };
+                match crate::app::client::req::make_req(prereq).await {
+                    Ok(resp) => {
+                        match resp.text().await {
+                            Ok(text) => text,
+                            Err(e) => return format!("Error reading response body from URL: {}", e),
+                        }
+                    }
+                    Err(e) => return format!("Error downloading spec from URL: {}", e),
+                }
+            } else {
+                spec_json.to_string()
+            };
+
+            match crate::app::client::api_parser::parse_and_import_openapi(&state.db, domain, &json_content).await {
+                Ok(summary) => summary,
+                Err(e) => format!("Failed to parse API spec: {}", e),
+            }
         }
         _ => format!("Unknown tool: {}", name),
     }

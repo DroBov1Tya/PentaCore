@@ -309,6 +309,147 @@ pub fn tools_list_msg(id: &Value) -> Value {
                         },
                         "required": ["method", "url"]
                     }
+                },
+                {
+                    "name": "diff_requests",
+                    "description": "Compare two saved HTTP responses by status code, body size, timing, and JSON structure. Use this for IDOR detection and blind injection analysis.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "request_id_a": { "type": "integer", "description": "ID of the first request to compare." },
+                            "request_id_b": { "type": "integer", "description": "ID of the second request to compare." }
+                        },
+                        "required": ["request_id_a", "request_id_b"]
+                    }
+                },
+                {
+                    "name": "claim_test_object",
+                    "description": "Register a test artifact (user, post, token, etc.) created during testing. Provide rollback_method/url/body so it can be automatically cleaned up later.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "object_type": { "type": "string", "description": "Type of object: user, post, comment, token, file, etc." },
+                            "object_id": { "type": "string", "description": "The ID or identifier of the created object." },
+                            "description": { "type": "string" },
+                            "rollback_method": { "type": "string", "description": "HTTP method for cleanup, e.g. DELETE." },
+                            "rollback_url": { "type": "string", "description": "Full URL to call for cleanup." },
+                            "rollback_body": { "type": "string", "description": "Optional request body for cleanup." }
+                        },
+                        "required": ["domain", "object_type", "object_id"]
+                    }
+                },
+                {
+                    "name": "rollback_test_object",
+                    "description": "Execute cleanup for a previously claimed test object. Sends the rollback HTTP request and marks the object as rolled_back.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer", "description": "ID of the test object to rollback." }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "get_test_objects",
+                    "description": "List all claimed test objects for a target. Filter by status to find objects that still need cleanup.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "status": { "type": "string", "enum": ["active", "rolled_back", "orphaned"] }
+                        },
+                        "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "bulk_upsert_coverage",
+                    "description": "Batch update coverage for multiple endpoint+vector pairs in a single call. Much faster than individual upsert_coverage calls.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "endpoint_id": { "type": "integer" },
+                                        "vector": { "type": "string" },
+                                        "status": { "type": "string", "enum": ["pending", "in_progress", "done", "skipped"] },
+                                        "description": { "type": "string" },
+                                        "notes": { "type": "string" }
+                                    },
+                                    "required": ["endpoint_id", "vector", "status"]
+                                }
+                            }
+                        },
+                        "required": ["items"]
+                    }
+                },
+                {
+                    "name": "bulk_save_requests",
+                    "description": "Save multiple HTTP request/response pairs in a single call. Returns all created IDs.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "endpoint_id": { "type": "integer" },
+                                        "raw_request": { "type": "string" },
+                                        "raw_response": { "type": "string" },
+                                        "status_code": { "type": "integer" },
+                                        "response_time_ms": { "type": "integer" },
+                                        "description": { "type": "string" },
+                                        "notes": { "type": "string" }
+                                    },
+                                    "required": ["endpoint_id", "raw_request"]
+                                }
+                            }
+                        },
+                        "required": ["items"]
+                    }
+                },
+                {
+                    "name": "save_endpoint_example",
+                    "description": "Save the minimal valid request/response example for an endpoint. Acts as functional API documentation. Only one example per endpoint (overwrites previous).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "endpoint_id": { "type": "integer" },
+                            "raw_request": { "type": "string" },
+                            "raw_response": { "type": "string" },
+                            "status_code": { "type": "integer" },
+                            "description": { "type": "string" }
+                        },
+                        "required": ["endpoint_id", "raw_request"]
+                    }
+                },
+                {
+                    "name": "get_endpoint_example",
+                    "description": "Retrieve the saved valid request/response example for an endpoint.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "endpoint_id": { "type": "integer" }
+                        },
+                        "required": ["endpoint_id"]
+                    }
+                },
+                {
+                    "name": "parse_api_spec",
+                    "description": "Download and parse an OpenAPI/Swagger specification (JSON) and automatically import all discovered routes into the database's endpoints table.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "The target domain to link endpoints to." },
+                            "url": { "type": "string", "description": "URL to the swagger.json file." },
+                            "json": { "type": "string", "description": "Raw JSON string if URL is not available." }
+                        },
+                        "required": ["domain"]
+                    }
                 }
             ]
         }
