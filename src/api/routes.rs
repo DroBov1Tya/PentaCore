@@ -5,16 +5,23 @@ use axum::{
 use std::sync::Arc;
 
 use super::handlers::{
-    attack_chains, coverage, credentials, endpoints, findings, init, requests, summary,
+    attack_chains, coverage, credentials, endpoints, findings, init, requests, scope, summary,
+    target_relations,
 };
 use crate::app::AppState;
 
-
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/init", get(init::instructions))
-        // Target context
+        .route("/", get(init::instructions))
         .route("/targets/{domain}/summary", get(summary::get))
+        .route(
+            "/targets/{domain}/scope",
+            get(scope::get).post(scope::upsert),
+        )
+        .route(
+            "/targets/{domain}/relations",
+            get(target_relations::list).post(target_relations::create),
+        )
         .route(
             "/targets/{domain}/endpoints",
             get(endpoints::list).post(endpoints::create),
@@ -27,7 +34,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/targets/{domain}/credentials",
             get(credentials::list).post(credentials::create),
         )
-        // Attack chains
         .route(
             "/targets/{domain}/chains",
             get(attack_chains::list).post(attack_chains::create),
@@ -36,7 +42,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/chains/{chain_id}/steps",
             get(attack_chains::get_steps).post(attack_chains::add_step),
         )
-        // Endpoint-level
         .route(
             "/endpoints/{endpoint_id}/requests",
             get(requests::list).post(requests::create),

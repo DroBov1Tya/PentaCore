@@ -1,5 +1,5 @@
 use crate::{
-    api, args,
+    api,
     config::{self, Config},
 };
 use anyhow::Result;
@@ -12,6 +12,8 @@ use tokio::signal;
 use tokio::sync::broadcast;
 
 pub mod database;
+
+use api::mcp_server;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -30,7 +32,6 @@ pub enum ShutdownMessage {
 }
 
 impl Application {
-    // pub async fn build(_args: args::AppArgs) -> Result<Self> {
     pub async fn build() -> Result<Self> {
         tracing::info!("🔧 Building application...");
 
@@ -49,8 +50,10 @@ impl Application {
 
         let state = Arc::clone(&self.state);
         let server_state = Arc::clone(&self.state);
+        let mcp_state = Arc::clone(&self.state);
 
         let server_handle = tokio::spawn(async move { api::server::start(server_state).await });
+        let mcp_handle = tokio::spawn(async move { mcp_server::start(mcp_state).await });
 
         tracing::info!("✅ Application ready");
 
@@ -58,6 +61,13 @@ impl Application {
             result = server_handle => {
                 match result {
                     Ok(Ok(())) => tracing::info!("✅ Server stopped gracefully"),
+                    Ok(Err(e)) => return Err(e),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            result = mcp_handle => {
+                match result {
+                    Ok(Ok(())) => tracing::info!("✅ MCP stdio stopped gracefully"),
                     Ok(Err(e)) => return Err(e),
                     Err(e) => return Err(e.into()),
                 }

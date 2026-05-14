@@ -26,10 +26,9 @@ pub async fn list(
 pub async fn upsert(
     State(state): State<Arc<AppState>>,
     Path(endpoint_id): Path<i64>,
-    Json(mut input): Json<db::UpsertCoverage>,
+    Json(input): Json<db::UpsertCoverage>,
 ) -> Json<serde_json::Value> {
-    input.endpoint_id = endpoint_id;
-    match db::upsert(&state.db, &input).await {
+    match db::upsert(&state.db, endpoint_id, &input).await {
         Ok(_) => Json(serde_json::json!({ "ok": true })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }

@@ -4,4 +4,6 @@ pub mod credentials;
 pub mod endpoints;
 pub mod findings;
 pub mod requests;
+pub mod scope;
 pub mod summary;
+pub mod target_relations;

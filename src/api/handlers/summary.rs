@@ -11,7 +11,7 @@ pub async fn get(
     Path(domain): Path<String>,
 ) -> Json<serde_json::Value> {
     match db::get(&state.db, &domain).await {
-        Ok(Some(summary)) => Json(serde_json::json!(summary)),
+        Ok(Some(s)) => Json(serde_json::json!(s)),
         Ok(None) => Json(serde_json::json!({ "error": "domain not found" })),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
