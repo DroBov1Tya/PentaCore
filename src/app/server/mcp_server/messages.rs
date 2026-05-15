@@ -1,11 +1,24 @@
 use serde_json::{Value, json};
 
-pub fn initialize_msg(id: &Value) -> Value {
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+];
+
+pub fn initialize_msg(id: &Value, requested_version: &str) -> Value {
+    let version_to_use = if SUPPORTED_PROTOCOL_VERSIONS.contains(&requested_version) {
+        requested_version
+    } else {
+        "2024-11-05" // fallback
+    };
+
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": version_to_use,
             "capabilities": {
                 "tools": {},
                 "resources": {}
@@ -559,6 +572,28 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "url": { "type": "string", "description": "URL to the GraphQL introspection JSON file." },
                             "json": { "type": "string", "description": "Raw JSON string if URL is not available." },
                             "base_endpoint": { "type": "string", "description": "The base path for GraphQL, e.g. '/graphql'. Default is '/graphql'." }
+                        },
+                        "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "next_actions",
+                    "description": "Analyze the full audit state (scope, endpoints, coverage, findings, test objects) and return a prioritized checklist of next steps. Use this at the start of every session and before declaring 'done'.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "Target domain to analyze" }
+                        },
+                        "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "generate_report",
+                    "description": "Generate a structured security audit report from all stored data: scope, findings (sorted by severity), coverage summary, and appendix with subdomains/credentials/cleanup status. Use this for final bug bounty submission.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "Target domain to generate report for" }
                         },
                         "required": ["domain"]
                     }

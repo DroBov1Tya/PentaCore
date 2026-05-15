@@ -1,10 +1,7 @@
 use crate::config::{self, Config};
 use anyhow::Result;
-use colored::*;
 use sqlx::{Pool, Sqlite};
-use std::io::{self, Write};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{Mutex, broadcast};
 
@@ -26,11 +23,6 @@ pub struct AppState {
 
 pub struct Application {
     state: Arc<AppState>,
-}
-
-pub enum ShutdownMessage {
-    Countdown { seconds_left: u32 },
-    Complete,
 }
 
 impl Application {
@@ -65,24 +57,20 @@ impl Application {
         let server_state = Arc::clone(&self.state);
         let mcp_state = Arc::clone(&self.state);
 
-        let server_handle = tokio::spawn(async move { server::server::start(server_state).await });
-        let mcp_handle = tokio::spawn(async move { mcp_server::start(mcp_state).await });
+        tokio::spawn(async move {
+            match server::server::start(server_state).await {
+                Ok(()) => tracing::info!("✅ REST API server stopped"),
+                Err(e) => tracing::warn!("⚠️ REST API server error (MCP stdio unaffected): {}", e),
+            }
+        });
 
         tracing::info!("✅ Application ready");
 
         tokio::select! {
-            result = server_handle => {
+            result = mcp_server::start(mcp_state) => {
                 match result {
-                    Ok(Ok(())) => tracing::info!("✅ Server stopped gracefully"),
-                    Ok(Err(e)) => return Err(e),
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            result = mcp_handle => {
-                match result {
-                    Ok(Ok(())) => tracing::info!("✅ MCP stdio stopped gracefully"),
-                    Ok(Err(e)) => return Err(e),
-                    Err(e) => return Err(e.into()),
+                    Ok(()) => tracing::info!("✅ MCP stdio stopped gracefully"),
+                    Err(e) => tracing::error!("❌ MCP stdio error: {}", e),
                 }
             }
             _ = signal::ctrl_c() => {

@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod client;
 pub mod coverage_requests;
 pub mod parsers;
