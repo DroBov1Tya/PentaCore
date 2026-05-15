@@ -156,6 +156,7 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
         "update_memory" => handlers::rag::handle_update_memory(args, state).await,
         "get_findings" => handlers::vulns::handle_get_findings(args, state).await,
         "save_finding" => handlers::vulns::handle_save_finding(args, state).await,
+        "update_finding" => handlers::vulns::handle_update_finding(args, state).await,
         "get_credentials" => handlers::vulns::handle_get_credentials(args, state).await,
         "save_credential" => handlers::vulns::handle_save_credential(args, state).await,
         "get_chains" => handlers::vulns::handle_get_chains(args, state).await,

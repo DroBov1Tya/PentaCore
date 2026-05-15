@@ -38,6 +38,26 @@ pub async fn handle_save_finding(args: &Value, state: &Arc<AppState>) -> String 
     }
 }
 
+pub async fn handle_update_finding(args: &Value, state: &Arc<AppState>) -> String {
+    let id = match args["id"].as_i64() {
+        Some(i) => i,
+        None => return "Error: finding id is required".to_string(),
+    };
+    
+    let input = findings::UpdateFinding {
+        severity: args["severity"].as_str().map(String::from),
+        status: args["status"].as_str().map(String::from),
+        evidence: args["evidence"].as_str().map(String::from),
+        description: args["description"].as_str().map(String::from),
+    };
+    
+    match findings::update(&state.db, id, &input).await {
+        Ok(true) => format!("Successfully updated finding {}", id),
+        Ok(false) => format!("Finding {} not found or no changes made", id),
+        Err(e) => format!("Error updating finding: {}", e),
+    }
+}
+
 pub async fn handle_get_credentials(args: &Value, state: &Arc<AppState>) -> String {
     let domain = args["domain"].as_str().unwrap_or("");
     match credentials::list(&state.db, domain).await {

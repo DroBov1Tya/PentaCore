@@ -244,6 +244,21 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     }
                 },
                 {
+                    "name": "update_finding",
+                    "description": "Update an existing vulnerability finding. Use this to change status (e.g. potential -> confirmed/false_positive), update severity, or add evidence.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer", "description": "The ID of the finding to update" },
+                            "severity": { "type": "string", "enum": ["info", "low", "medium", "high", "critical"] },
+                            "status": { "type": "string", "enum": ["potential", "confirmed", "false_positive"] },
+                            "evidence": { "type": "string" },
+                            "description": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
                     "name": "get_coverage",
                     "description": "Get test coverage for an endpoint.",
                     "inputSchema": { "type": "object", "properties": { "endpoint_id": { "type": "integer" }, "status": { "type": "string" } }, "required": ["endpoint_id"] }

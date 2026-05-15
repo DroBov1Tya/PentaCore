@@ -60,7 +60,27 @@ pub async fn handle_make_request(args: &Value, state: &Arc<AppState>) -> String 
     match crate::app::client::req::make_req(prereq).await {
         Ok(resp) => {
             let status = resp.status().as_u16() as i64;
-            let resp_text = resp.text().await.unwrap_or_default();
+            let max_size: u64 = 500 * 1024;
+            let content_len = resp.content_length().unwrap_or(0);
+            
+            let mut resp_text = String::new();
+            if content_len > max_size {
+                resp_text = format!("[TRUNCATED: Content-Length reported as {} bytes, exceeding 500KB limit]", content_len);
+            } else {
+                use futures::StreamExt;
+                let mut total_read = 0;
+                while let Some(chunk) = stream.next().await {
+                    if let Ok(bytes) = chunk {
+                        total_read += bytes.len() as u64;
+                        if total_read > max_size {
+                            resp_text.push_str("\n\n[...TRUNCATED: Response exceeded 500KB limit...]");
+                            break;
+                        }
+                        resp_text.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                }
+            }
+
 
             if let Some(eid) = endpoint_id {
                 let req_input = requests::CreateRequest {
