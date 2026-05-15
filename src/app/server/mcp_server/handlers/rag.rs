@@ -17,7 +17,10 @@ pub async fn handle_memorize_concept(args: &Value, state: &Arc<AppState>) -> Str
         .unwrap_or_default();
 
     let mut store = state.memory_store.lock().await;
-    match store.memorize(domain, category, title, content, &tags).await {
+    match store
+        .memorize(domain, category, title, content, &tags)
+        .await
+    {
         Ok(id) => format!("Concept memorized successfully. Memory ID: {}", id),
         Err(e) => format!("Error memorizing concept: {}", e),
     }
@@ -82,15 +85,18 @@ pub async fn handle_update_memory(args: &Value, state: &Arc<AppState>) -> String
     let category = args["category"].as_str();
     let title = args["title"].as_str();
     let content = args["content"].as_str();
-    
+
     let tags_vec: Option<Vec<String>> = args["tags"].as_array().map(|v| {
         v.iter()
             .filter_map(|s| s.as_str().map(String::from))
             .collect()
     });
-    
+
     let mut store = state.memory_store.lock().await;
-    match store.update_memory(id, category, title, content, tags_vec.as_deref()).await {
+    match store
+        .update_memory(id, category, title, content, tags_vec.as_deref())
+        .await
+    {
         Ok(_) => format!("Memory {} updated successfully.", id),
         Err(e) => format!("Error updating memory: {}", e),
     }

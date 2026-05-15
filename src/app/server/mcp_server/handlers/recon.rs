@@ -1,5 +1,5 @@
-use crate::app::database::queries::{endpoints, target_relations};
 use crate::app::AppState;
+use crate::app::database::queries::{endpoints, target_relations};
 use serde_json::Value;
 use std::sync::Arc;
 

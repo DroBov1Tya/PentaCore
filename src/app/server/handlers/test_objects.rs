@@ -1,8 +1,8 @@
-use crate::app::database::queries::test_objects;
 use crate::app::AppState;
+use crate::app::database::queries::test_objects;
 use axum::{
-    extract::{Path, Query, State},
     Json,
+    extract::{Path, Query, State},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

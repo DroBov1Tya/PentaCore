@@ -1,5 +1,5 @@
-use crate::app::database::queries::{attack_chains, credentials, findings};
 use crate::app::AppState;
+use crate::app::database::queries::{attack_chains, credentials, findings};
 use serde_json::Value;
 use std::sync::Arc;
 

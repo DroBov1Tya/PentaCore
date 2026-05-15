@@ -1,8 +1,8 @@
-use crate::app::database::queries::endpoint_examples;
 use crate::app::AppState;
+use crate::app::database::queries::endpoint_examples;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use std::sync::Arc;
 

@@ -1,10 +1,15 @@
 use anyhow::Result;
 use arrow_array::{
-    types::Float32Type, FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray,
+    FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, types::Float32Type,
 };
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
-use lancedb::{query::{ExecutableQuery, QueryBase}, connection::Connection, index::Index, Table};
+use lancedb::{
+    Table,
+    connection::Connection,
+    index::Index,
+    query::{ExecutableQuery, QueryBase},
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -51,14 +56,18 @@ impl MemoryStore {
                 Field::new("tags", DataType::Utf8, false),
                 Field::new(
                     "vector",
-                    DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        384,
+                    ),
                     false,
                 ),
             ]));
 
             let empty_batch = RecordBatch::new_empty(schema.clone());
-            
-            Ok(self.db
+
+            Ok(self
+                .db
                 .create_table(&self.table_name, vec![empty_batch])
                 .execute()
                 .await?)
@@ -74,22 +83,23 @@ impl MemoryStore {
         tags: &[String],
     ) -> Result<String> {
         let table = self.get_or_create_table().await?;
-        
+
         let embed_text = format!("{} — {}", title, content);
         let vector = self.get_embedder()?.embed(&embed_text)?;
         let tags_json = serde_json::to_string(tags)?;
         let id = Uuid::new_v4().to_string();
 
         let schema = table.schema().await?;
-        
+
         let id_arr = StringArray::from(vec![id.clone()]);
         let domain_arr = StringArray::from(vec![domain]);
         let cat_arr = StringArray::from(vec![category]);
         let title_arr = StringArray::from(vec![title]);
         let content_arr = StringArray::from(vec![content]);
         let tags_arr = StringArray::from(vec![tags_json]);
-        
-        let vec_opt: Vec<Option<Vec<Option<f32>>>> = vec![Some(vector.into_iter().map(Some).collect())];
+
+        let vec_opt: Vec<Option<Vec<Option<f32>>>> =
+            vec![Some(vector.into_iter().map(Some).collect())];
         let vector_arr = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(vec_opt, 384);
 
         let batch = RecordBatch::try_new(
@@ -118,43 +128,68 @@ impl MemoryStore {
     ) -> Result<SearchResult> {
         let table = self.get_or_create_table().await?;
         if table.count_rows(None).await? == 0 {
-            return Ok(SearchResult { query: query.to_string(), results: vec![], total_memories: 0 });
+            return Ok(SearchResult {
+                query: query.to_string(),
+                results: vec![],
+                total_memories: 0,
+            });
         }
 
         let query_vector = self.get_embedder()?.embed(query)?;
         let total_memories = table.count_rows(None).await? as i64;
 
         let mut q = table.query().nearest_to(query_vector.as_slice())?;
-        
+
         let batches: Vec<RecordBatch> = if let Some(d) = domain_filter {
             q.limit(limit)
-             .only_if(format!("domain = '{}'", d))
-             .execute()
-             .await?
-             .try_collect()
-             .await?
+                .only_if(format!("domain = '{}'", d))
+                .execute()
+                .await?
+                .try_collect()
+                .await?
         } else {
-            q.limit(limit)
-             .execute()
-             .await?
-             .try_collect()
-             .await?
+            q.limit(limit).execute().await?.try_collect().await?
         };
-        
+
         let mut results = Vec::new();
         for batch in batches {
-            let ids = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-            let domains = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-            let cats = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
-            let titles = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
-            let contents = batch.column(4).as_any().downcast_ref::<StringArray>().unwrap();
-            let tags = batch.column(5).as_any().downcast_ref::<StringArray>().unwrap();
-            
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let domains = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let cats = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let titles = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let contents = batch
+                .column(4)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let tags = batch
+                .column(5)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+
             let distance_col = batch.column_by_name("_distance");
 
             for i in 0..batch.num_rows() {
-                let parsed_tags: Vec<String> = serde_json::from_str(tags.value(i)).unwrap_or_default();
-                
+                let parsed_tags: Vec<String> =
+                    serde_json::from_str(tags.value(i)).unwrap_or_default();
+
                 let dist = distance_col
                     .and_then(|c| c.as_any().downcast_ref::<arrow_array::Float32Array>())
                     .map(|arr| arr.value(i) as f64);
@@ -192,7 +227,11 @@ impl MemoryStore {
         })
     }
 
-    pub async fn list_memories(&self, domain_filter: Option<&str>, limit: usize) -> Result<Vec<MemoryNote>> {
+    pub async fn list_memories(
+        &self,
+        domain_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryNote>> {
         let table = self.get_or_create_table().await?;
         if table.count_rows(None).await? == 0 {
             return Ok(vec![]);
@@ -201,30 +240,51 @@ impl MemoryStore {
         let mut q = table.query();
         let batches: Vec<RecordBatch> = if let Some(d) = domain_filter {
             q.limit(limit)
-             .only_if(format!("domain = '{}'", d))
-             .execute()
-             .await?
-             .try_collect()
-             .await?
+                .only_if(format!("domain = '{}'", d))
+                .execute()
+                .await?
+                .try_collect()
+                .await?
         } else {
-            q.limit(limit)
-             .execute()
-             .await?
-             .try_collect()
-             .await?
+            q.limit(limit).execute().await?.try_collect().await?
         };
 
         let mut results = Vec::new();
         for batch in batches {
-            let ids = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-            let domains = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-            let cats = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
-            let titles = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
-            let contents = batch.column(4).as_any().downcast_ref::<StringArray>().unwrap();
-            let tags = batch.column(5).as_any().downcast_ref::<StringArray>().unwrap();
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let domains = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let cats = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let titles = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let contents = batch
+                .column(4)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let tags = batch
+                .column(5)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
 
             for i in 0..batch.num_rows() {
-                let parsed_tags: Vec<String> = serde_json::from_str(tags.value(i)).unwrap_or_default();
+                let parsed_tags: Vec<String> =
+                    serde_json::from_str(tags.value(i)).unwrap_or_default();
 
                 results.push(MemoryNote {
                     id: Some(ids.value(i).to_string()),
@@ -243,7 +303,8 @@ impl MemoryStore {
 
     pub async fn get_memory(&self, memory_id: &str) -> Result<Option<MemoryNote>> {
         let table = self.get_or_create_table().await?;
-        let batches: Vec<RecordBatch> = table.query()
+        let batches: Vec<RecordBatch> = table
+            .query()
             .only_if(format!("id = '{}'", memory_id))
             .limit(1)
             .execute()
@@ -253,14 +314,39 @@ impl MemoryStore {
 
         for batch in batches {
             if batch.num_rows() > 0 {
-                let ids = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
-                let domains = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
-                let cats = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
-                let titles = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
-                let contents = batch.column(4).as_any().downcast_ref::<StringArray>().unwrap();
-                let tags = batch.column(5).as_any().downcast_ref::<StringArray>().unwrap();
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let domains = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let cats = batch
+                    .column(2)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let titles = batch
+                    .column(3)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let contents = batch
+                    .column(4)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let tags = batch
+                    .column(5)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
 
-                let parsed_tags: Vec<String> = serde_json::from_str(tags.value(0)).unwrap_or_default();
+                let parsed_tags: Vec<String> =
+                    serde_json::from_str(tags.value(0)).unwrap_or_default();
 
                 return Ok(Some(MemoryNote {
                     id: Some(ids.value(0).to_string()),
@@ -284,7 +370,9 @@ impl MemoryStore {
         content: Option<&str>,
         tags: Option<&[String]>,
     ) -> Result<()> {
-        let existing = self.get_memory(memory_id).await?
+        let existing = self
+            .get_memory(memory_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Memory with id {} not found", memory_id))?;
 
         let new_cat = category.unwrap_or(&existing.category);
@@ -293,23 +381,27 @@ impl MemoryStore {
         let new_tags = tags.unwrap_or(&existing.tags);
 
         self.forget(memory_id).await?;
-        
+
         let table = self.get_or_create_table().await?;
         let embed_text = format!("{} — {}", new_title, new_content);
         let vector = self.get_embedder()?.embed(&embed_text)?;
         let tags_json = serde_json::to_string(new_tags)?;
 
         let schema = table.schema().await?;
-        
+
         let id_arr = StringArray::from(vec![memory_id.to_string()]);
         let domain_arr = StringArray::from(vec![existing.domain.as_str()]);
         let cat_arr = StringArray::from(vec![new_cat]);
         let title_arr = StringArray::from(vec![new_title]);
         let content_arr = StringArray::from(vec![new_content]);
         let tags_arr = StringArray::from(vec![tags_json]);
-        
-        let vec_opt: Vec<Option<Vec<Option<f32>>>> = vec![Some(vector.into_iter().map(Some).collect())];
-        let vector_arr = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(vec_opt, 384);
+
+        let vec_opt: Vec<Option<Vec<Option<f32>>>> =
+            vec![Some(vector.into_iter().map(Some).collect())];
+        let vector_arr =
+            FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+                vec_opt, 384,
+            );
 
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -330,7 +422,9 @@ impl MemoryStore {
 
     pub async fn forget(&self, memory_id: &str) -> Result<()> {
         let table = self.get_or_create_table().await?;
-        table.delete(format!("id = '{}'", memory_id).as_str()).await?;
+        table
+            .delete(format!("id = '{}'", memory_id).as_str())
+            .await?;
         Ok(())
     }
 }

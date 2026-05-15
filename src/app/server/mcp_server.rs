@@ -110,15 +110,23 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
         "make_race_requests" => handlers::client::handle_make_race_requests(args, state).await,
         "get_coverage" => handlers::coverage_requests::handle_get_coverage(args, state).await,
         "upsert_coverage" => handlers::coverage_requests::handle_upsert_coverage(args, state).await,
-        "bulk_upsert_coverage" => handlers::coverage_requests::handle_bulk_upsert_coverage(args, state).await,
+        "bulk_upsert_coverage" => {
+            handlers::coverage_requests::handle_bulk_upsert_coverage(args, state).await
+        }
         "get_requests" => handlers::coverage_requests::handle_get_requests(args, state).await,
         "save_request" => handlers::coverage_requests::handle_save_request(args, state).await,
-        "bulk_save_requests" => handlers::coverage_requests::handle_bulk_save_requests(args, state).await,
+        "bulk_save_requests" => {
+            handlers::coverage_requests::handle_bulk_save_requests(args, state).await
+        }
         "diff_requests" => handlers::coverage_requests::handle_diff_requests(args, state).await,
         "claim_test_object" => handlers::test_objects::handle_claim_test_object(args, state).await,
-        "rollback_test_object" => handlers::test_objects::handle_rollback_test_object(args, state).await,
+        "rollback_test_object" => {
+            handlers::test_objects::handle_rollback_test_object(args, state).await
+        }
         "get_test_objects" => handlers::test_objects::handle_get_test_objects(args, state).await,
-        "save_endpoint_example" => handlers::parsers::handle_save_endpoint_example(args, state).await,
+        "save_endpoint_example" => {
+            handlers::parsers::handle_save_endpoint_example(args, state).await
+        }
         "get_endpoint_example" => handlers::parsers::handle_get_endpoint_example(args, state).await,
         "parse_api_spec" => handlers::parsers::handle_parse_api_spec(args, state).await,
         "parse_graphql_spec" => handlers::parsers::handle_parse_graphql_spec(args, state).await,

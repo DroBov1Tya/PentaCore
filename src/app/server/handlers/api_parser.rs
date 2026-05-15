@@ -1,8 +1,8 @@
-use crate::app::client::api_parser;
 use crate::app::AppState;
+use crate::app::client::api_parser;
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -58,7 +58,9 @@ pub async fn parse_graphql(
         return Err("Either url or json must be provided".to_string());
     }
 
-    let base_endpoint = payload.base_endpoint.unwrap_or_else(|| "/graphql".to_string());
+    let base_endpoint = payload
+        .base_endpoint
+        .unwrap_or_else(|| "/graphql".to_string());
 
     let json_content = if let Some(url) = &payload.url {
         let prereq = crate::app::client::req::PreRequest {
@@ -80,7 +82,9 @@ pub async fn parse_graphql(
         payload.json.unwrap()
     };
 
-    match api_parser::parse_and_import_graphql(&state.db, &domain, &json_content, &base_endpoint).await {
+    match api_parser::parse_and_import_graphql(&state.db, &domain, &json_content, &base_endpoint)
+        .await
+    {
         Ok(summary) => Ok(Json(summary)),
         Err(e) => Err(e.to_string()),
     }

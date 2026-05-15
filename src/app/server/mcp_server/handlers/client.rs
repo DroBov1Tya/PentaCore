@@ -1,5 +1,5 @@
-use crate::app::database::queries::requests;
 use crate::app::AppState;
+use crate::app::database::queries::requests;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -80,9 +80,7 @@ pub async fn handle_make_request(args: &Value, state: &Arc<AppState>) -> String 
                 "".to_string()
             };
 
-            if let Some(recon_hint) =
-                crate::app::client::recon::analyze_response(&resp_text)
-            {
+            if let Some(recon_hint) = crate::app::client::recon::analyze_response(&resp_text) {
                 hint.push_str(&recon_hint);
             }
 

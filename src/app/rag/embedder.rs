@@ -8,7 +8,7 @@ pub struct LocalEmbedder {
 impl LocalEmbedder {
     pub fn new() -> Result<Self> {
         let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(true),
+            InitOptions::new(EmbeddingModel::AllMiniLML6V2).with_show_download_progress(false),
         )?;
 
         Ok(Self { model })

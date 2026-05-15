@@ -1,5 +1,5 @@
-use crate::app::database::queries::{scope, summary};
 use crate::app::AppState;
+use crate::app::database::queries::{scope, summary};
 use serde_json::Value;
 use std::sync::Arc;
 

@@ -1,5 +1,5 @@
-use crate::app::database::queries::test_objects;
 use crate::app::AppState;
+use crate::app::database::queries::test_objects;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -14,7 +14,10 @@ pub async fn handle_claim_test_object(args: &Value, state: &Arc<AppState>) -> St
         rollback_body: args["rollback_body"].as_str().map(String::from),
     };
     match test_objects::claim(&state.db, domain, &input).await {
-        Ok(id) => format!("Test object claimed. ID: {}. Remember to rollback after testing.", id),
+        Ok(id) => format!(
+            "Test object claimed. ID: {}. Remember to rollback after testing.",
+            id
+        ),
         Err(e) => format!("Error: {}", e),
     }
 }
@@ -37,11 +40,21 @@ pub async fn handle_rollback_test_object(args: &Value, state: &Arc<AppState>) ->
                     user_agent: None,
                 };
                 match crate::app::client::req::make_req(prereq).await {
-                    Ok(resp) => format!("Rollback executed. HTTP {}. Object {} marked as rolled_back.", resp.status().as_u16(), obj_id),
-                    Err(e) => format!("Rollback request failed: {}. Object marked as rolled_back anyway.", e),
+                    Ok(resp) => format!(
+                        "Rollback executed. HTTP {}. Object {} marked as rolled_back.",
+                        resp.status().as_u16(),
+                        obj_id
+                    ),
+                    Err(e) => format!(
+                        "Rollback request failed: {}. Object marked as rolled_back anyway.",
+                        e
+                    ),
                 }
             } else {
-                format!("Object {} marked as rolled_back. No rollback URL was configured.", obj_id)
+                format!(
+                    "Object {} marked as rolled_back. No rollback URL was configured.",
+                    obj_id
+                )
             }
         }
         Ok(None) => format!("Error: test object with id {} not found", obj_id),

@@ -122,13 +122,16 @@ pub async fn update_memory(
     Json(payload): Json<UpdateMemoryReq>,
 ) -> Result<Json<ForgetResp>, String> {
     let mut store = state.memory_store.lock().await;
-    match store.update_memory(
-        &id,
-        payload.category.as_deref(),
-        payload.title.as_deref(),
-        payload.content.as_deref(),
-        payload.tags.as_deref(),
-    ).await {
+    match store
+        .update_memory(
+            &id,
+            payload.category.as_deref(),
+            payload.title.as_deref(),
+            payload.content.as_deref(),
+            payload.tags.as_deref(),
+        )
+        .await
+    {
         Ok(_) => Ok(Json(ForgetResp { success: true })),
         Err(e) => Err(e.to_string()),
     }

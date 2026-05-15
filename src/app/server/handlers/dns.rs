@@ -1,5 +1,5 @@
 use crate::app::client::dns;
-use axum::{extract::Path, Json};
+use axum::{Json, extract::Path};
 
 pub async fn resolve(Path(domain): Path<String>) -> Result<Json<Vec<String>>, String> {
     if domain.is_empty() {
@@ -11,7 +11,7 @@ pub async fn resolve(Path(domain): Path<String>) -> Result<Json<Vec<String>>, St
 
 pub async fn enumerate(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::app::AppState>>,
-    Path(domain): Path<String>
+    Path(domain): Path<String>,
 ) -> Result<Json<Vec<String>>, String> {
     if domain.is_empty() {
         return Err("domain is required".to_string());
@@ -26,7 +26,9 @@ pub async fn enumerate(
                 rel_type: "subdomain".to_string(),
                 description: Some("Discovered via enumerate_subdomains".to_string()),
             };
-            let _ = crate::app::database::queries::target_relations::create(&state.db, &domain, &rel).await;
+            let _ =
+                crate::app::database::queries::target_relations::create(&state.db, &domain, &rel)
+                    .await;
         }
     }
 

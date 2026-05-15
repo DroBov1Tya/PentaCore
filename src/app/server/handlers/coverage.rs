@@ -54,7 +54,7 @@ pub async fn bulk_upsert(
 ) -> Json<serde_json::Value> {
     let mut ok = 0u32;
     let mut errors = Vec::new();
-    
+
     for item in input.items {
         let upsert_input = db::UpsertCoverage {
             vector: item.vector,
@@ -67,7 +67,7 @@ pub async fn bulk_upsert(
             Err(e) => errors.push(format!("endpoint_id {}: {}", item.endpoint_id, e)),
         }
     }
-    
+
     Json(serde_json::json!({
         "ok": ok,
         "errors": errors

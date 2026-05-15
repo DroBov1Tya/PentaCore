@@ -21,7 +21,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/targets/{domain}/rag/memorize", post(rag::memorize))
         .route("/rag/search", get(rag::search))
         .route("/rag/memories", get(rag::list_memories))
-        .route("/rag/memories/{id}", get(rag::get_memory).put(rag::update_memory).delete(rag::forget))
+        .route(
+            "/rag/memories/{id}",
+            get(rag::get_memory)
+                .put(rag::update_memory)
+                .delete(rag::forget),
+        )
         .route(
             "/targets/{domain}/relations",
             get(target_relations::list).post(target_relations::create),
@@ -65,9 +70,18 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(test_objects::list).post(test_objects::claim),
         )
         .route("/test_objects/{id}/rollback", post(test_objects::rollback))
-        .route("/endpoints/{endpoint_id}/examples", get(endpoint_examples::get).post(endpoint_examples::upsert))
-        .route("/targets/{domain}/parse_openapi", post(api_parser::parse_openapi))
-        .route("/targets/{domain}/parse_graphql", post(api_parser::parse_graphql))
+        .route(
+            "/endpoints/{endpoint_id}/examples",
+            get(endpoint_examples::get).post(endpoint_examples::upsert),
+        )
+        .route(
+            "/targets/{domain}/parse_openapi",
+            post(api_parser::parse_openapi),
+        )
+        .route(
+            "/targets/{domain}/parse_graphql",
+            post(api_parser::parse_graphql),
+        )
         .route("/dns/{domain}/resolve", get(dns::resolve))
         .route("/dns/{domain}/enumerate", get(dns::enumerate))
         .route("/bulk/coverage", post(coverage::bulk_upsert))

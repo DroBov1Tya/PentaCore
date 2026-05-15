@@ -1,5 +1,5 @@
-use crate::app::database::queries::endpoint_examples;
 use crate::app::AppState;
+use crate::app::database::queries::endpoint_examples;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -55,7 +55,9 @@ pub async fn handle_parse_api_spec(args: &Value, state: &Arc<AppState>) -> Strin
         spec_json.to_string()
     };
 
-    match crate::app::client::api_parser::parse_and_import_openapi(&state.db, domain, &json_content).await {
+    match crate::app::client::api_parser::parse_and_import_openapi(&state.db, domain, &json_content)
+        .await
+    {
         Ok(summary) => summary,
         Err(e) => format!("Failed to parse API spec: {}", e),
     }
@@ -91,7 +93,14 @@ pub async fn handle_parse_graphql_spec(args: &Value, state: &Arc<AppState>) -> S
         spec_json.to_string()
     };
 
-    match crate::app::client::api_parser::parse_and_import_graphql(&state.db, domain, &json_content, base_endpoint).await {
+    match crate::app::client::api_parser::parse_and_import_graphql(
+        &state.db,
+        domain,
+        &json_content,
+        base_endpoint,
+    )
+    .await
+    {
         Ok(summary) => summary,
         Err(e) => format!("Failed to parse GraphQL spec: {}", e),
     }

@@ -50,7 +50,7 @@ pub async fn bulk_save(
     let mut ok = 0u32;
     let mut ids = Vec::new();
     let mut errors = Vec::new();
-    
+
     for item in input.items {
         let req_input = db::CreateRequest {
             raw_request: item.raw_request,
@@ -68,7 +68,7 @@ pub async fn bulk_save(
             Err(e) => errors.push(format!("endpoint_id {}: {}", item.endpoint_id, e)),
         }
     }
-    
+
     Json(serde_json::json!({
         "ok": ok,
         "ids": ids,
@@ -101,17 +101,28 @@ pub async fn diff(
             let mut diffs = Vec::new();
 
             if a.status_code != b.status_code {
-                diffs.push(format!("STATUS: {:?} vs {:?}", a.status_code, b.status_code));
+                diffs.push(format!(
+                    "STATUS: {:?} vs {:?}",
+                    a.status_code, b.status_code
+                ));
             }
 
             let size_a = a.raw_response.as_ref().map(|r| r.len()).unwrap_or(0);
             let size_b = b.raw_response.as_ref().map(|r| r.len()).unwrap_or(0);
             if size_a != size_b {
-                diffs.push(format!("SIZE: {} bytes vs {} bytes (delta: {})", size_a, size_b, size_b as i64 - size_a as i64));
+                diffs.push(format!(
+                    "SIZE: {} bytes vs {} bytes (delta: {})",
+                    size_a,
+                    size_b,
+                    size_b as i64 - size_a as i64
+                ));
             }
 
             if a.response_time_ms != b.response_time_ms {
-                diffs.push(format!("TIME: {:?}ms vs {:?}ms", a.response_time_ms, b.response_time_ms));
+                diffs.push(format!(
+                    "TIME: {:?}ms vs {:?}ms",
+                    a.response_time_ms, b.response_time_ms
+                ));
             }
 
             Json(serde_json::json!({

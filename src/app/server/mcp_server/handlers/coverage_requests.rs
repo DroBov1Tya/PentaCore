@@ -1,5 +1,5 @@
-use crate::app::database::queries::{coverage, requests};
 use crate::app::AppState;
+use crate::app::database::queries::{coverage, requests};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -72,7 +72,12 @@ pub async fn handle_bulk_upsert_coverage(args: &Value, state: &Arc<AppState>) ->
     if errors.is_empty() {
         format!("Bulk coverage: {} items upserted successfully.", ok)
     } else {
-        format!("Bulk coverage: {} ok, {} errors:\n{}", ok, errors.len(), errors.join("\n"))
+        format!(
+            "Bulk coverage: {} ok, {} errors:\n{}",
+            ok,
+            errors.len(),
+            errors.join("\n")
+        )
     }
 }
 
@@ -105,7 +110,12 @@ pub async fn handle_bulk_save_requests(args: &Value, state: &Arc<AppState>) -> S
     if errors.is_empty() {
         format!("Bulk requests: {} saved. IDs: [{}]", ok, ids.join(", "))
     } else {
-        format!("Bulk requests: {} ok, {} errors:\n{}", ok, errors.len(), errors.join("\n"))
+        format!(
+            "Bulk requests: {} ok, {} errors:\n{}",
+            ok,
+            errors.len(),
+            errors.join("\n")
+        )
     }
 }
 
@@ -138,32 +148,51 @@ pub async fn handle_diff_requests(args: &Value, state: &Arc<AppState>) -> String
             let size_a = a.raw_response.as_ref().map(|r| r.len()).unwrap_or(0);
             let size_b = b.raw_response.as_ref().map(|r| r.len()).unwrap_or(0);
             if size_a != size_b {
-                diff.push(format!("SIZE: {} bytes vs {} bytes (delta: {})", size_a, size_b, (size_b as i64 - size_a as i64)));
+                diff.push(format!(
+                    "SIZE: {} bytes vs {} bytes (delta: {})",
+                    size_a,
+                    size_b,
+                    (size_b as i64 - size_a as i64)
+                ));
             }
 
             match (a.response_time_ms, b.response_time_ms) {
-                (Some(ta), Some(tb)) if ta != tb => diff.push(format!("TIME: {}ms vs {}ms", ta, tb)),
+                (Some(ta), Some(tb)) if ta != tb => {
+                    diff.push(format!("TIME: {}ms vs {}ms", ta, tb))
+                }
                 _ => {}
             }
 
             let body_a = a.raw_response.as_deref().unwrap_or("");
             let body_b = b.raw_response.as_deref().unwrap_or("");
-            if let (Ok(ja), Ok(jb)) = (serde_json::from_str::<Value>(body_a), serde_json::from_str::<Value>(body_b)) {
+            if let (Ok(ja), Ok(jb)) = (
+                serde_json::from_str::<Value>(body_a),
+                serde_json::from_str::<Value>(body_b),
+            ) {
                 if let (Some(oa), Some(ob)) = (ja.as_object(), jb.as_object()) {
                     let keys_a: std::collections::HashSet<_> = oa.keys().collect();
                     let keys_b: std::collections::HashSet<_> = ob.keys().collect();
                     let only_a: Vec<_> = keys_a.difference(&keys_b).collect();
                     let only_b: Vec<_> = keys_b.difference(&keys_a).collect();
-                    if !only_a.is_empty() { diff.push(format!("JSON keys only in A: {:?}", only_a)); }
-                    if !only_b.is_empty() { diff.push(format!("JSON keys only in B: {:?}", only_b)); }
+                    if !only_a.is_empty() {
+                        diff.push(format!("JSON keys only in A: {:?}", only_a));
+                    }
+                    if !only_b.is_empty() {
+                        diff.push(format!("JSON keys only in B: {:?}", only_b));
+                    }
                     for key in keys_a.intersection(&keys_b) {
-                        if oa[*key] != ob[*key] { diff.push(format!("JSON field '{}' differs", key)); }
+                        if oa[*key] != ob[*key] {
+                            diff.push(format!("JSON field '{}' differs", key));
+                        }
                     }
                 }
             }
 
             if diff.is_empty() {
-                format!("Diff: Responses are identical (request {} vs {})", id_a, id_b)
+                format!(
+                    "Diff: Responses are identical (request {} vs {})",
+                    id_a, id_b
+                )
             } else {
                 format!("Diff (request {} vs {}):\n{}", id_a, id_b, diff.join("\n"))
             }

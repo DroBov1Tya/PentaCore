@@ -44,7 +44,9 @@ impl Application {
 
         tracing::info!("🧠 Initializing embedded RAG memory (fastembed + lancedb)...");
         let lancedb_path = cfg.db_location.replace("mcp.db", ".lancedb");
-        let memory_store = Arc::new(Mutex::new(MemoryStore::new(lancedb_path.replace("sqlite:", "").as_str()).await?));
+        let memory_store = Arc::new(Mutex::new(
+            MemoryStore::new(lancedb_path.replace("sqlite:", "").as_str()).await?,
+        ));
 
         let state = Arc::new(AppState {
             cfg,
@@ -88,34 +90,8 @@ impl Application {
             }
         }
 
-        for remaining in (1..=5).rev() {
-            // print_shutdown_status(ShutdownMessage::Countdown {
-            //     seconds_left: remaining,
-            // });
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-
-        // print_shutdown_status(ShutdownMessage::Complete);
-
         let _ = state.shutdown.send(());
 
         Ok(())
-    }
-}
-
-pub fn print_shutdown_status(message: ShutdownMessage) {
-    match message {
-        ShutdownMessage::Countdown { seconds_left } => {
-            let status = format!(
-                "\r{} {}",
-                "⏳ [Shutting down]".bold().cyan(),
-                format!("{}s", seconds_left).bold().yellow()
-            );
-            eprint!("{:<80}", status);
-            io::stderr().flush().unwrap();
-        }
-        ShutdownMessage::Complete => {
-            eprintln!("\n{}", "☑️ Shutdown complete".bold().green());
-        }
     }
 }
