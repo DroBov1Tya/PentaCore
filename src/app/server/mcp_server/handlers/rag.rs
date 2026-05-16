@@ -2,6 +2,8 @@ use crate::app::AppState;
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Ingests a new technical concept, architectural note, or generalized finding into the vector store.
+/// It uses fastembed to generate embeddings and stores them in LanceDB for semantic retrieval.
 pub async fn handle_memorize_concept(args: &Value, state: &Arc<AppState>) -> String {
     let domain = args["domain"].as_str().unwrap_or("");
     let category = args["category"].as_str().unwrap_or("note");
@@ -26,6 +28,8 @@ pub async fn handle_memorize_concept(args: &Value, state: &Arc<AppState>) -> Str
     }
 }
 
+/// Performs a semantic search (RAG) against the LanceDB vector store using the provided query.
+/// Returns the top-k most semantically similar memories, which is essential for cross-referencing past findings.
 pub async fn handle_search_knowledge(args: &Value, state: &Arc<AppState>) -> String {
     let query = args["query"].as_str().unwrap_or("");
     let limit = args["limit"].as_u64().unwrap_or(5) as usize;
@@ -38,6 +42,8 @@ pub async fn handle_search_knowledge(args: &Value, state: &Arc<AppState>) -> Str
     }
 }
 
+/// Retrieves the most recent memories added to the RAG store without performing semantic search.
+/// Useful for recalling what was just added to the agent's long-term memory.
 pub async fn handle_list_memories(args: &Value, state: &Arc<AppState>) -> String {
     let limit = args["limit"].as_u64().unwrap_or(10) as usize;
     let target_domain = args["domain"].as_str();

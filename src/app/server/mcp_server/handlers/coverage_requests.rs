@@ -49,6 +49,8 @@ pub async fn handle_save_request(args: &Value, state: &Arc<AppState>) -> String 
     }
 }
 
+/// Batch updates coverage for multiple endpoint+vector pairs in a single transaction-like manner.
+/// Returns a summary indicating how many coverage entries were successfully updated and lists any errors.
 pub async fn handle_bulk_upsert_coverage(args: &Value, state: &Arc<AppState>) -> String {
     let items = match args["items"].as_array() {
         Some(arr) => arr,
@@ -81,6 +83,8 @@ pub async fn handle_bulk_upsert_coverage(args: &Value, state: &Arc<AppState>) ->
     }
 }
 
+/// Saves multiple HTTP request/response pairs concurrently.
+/// Ideal for mass-importing traffic logs or scanning tool output into the evidence store.
 pub async fn handle_bulk_save_requests(args: &Value, state: &Arc<AppState>) -> String {
     let items = match args["items"].as_array() {
         Some(arr) => arr,
@@ -119,6 +123,9 @@ pub async fn handle_bulk_save_requests(args: &Value, state: &Arc<AppState>) -> S
     }
 }
 
+/// Compares two saved HTTP responses to identify security-relevant discrepancies.
+/// It highlights differences in HTTP status codes, body sizes, timing delays (for blind injection analysis),
+/// and structurally compares JSON payloads if applicable.
 pub async fn handle_diff_requests(args: &Value, state: &Arc<AppState>) -> String {
     let id_a = args["request_id_a"].as_i64().unwrap_or(0);
     let id_b = args["request_id_b"].as_i64().unwrap_or(0);

@@ -74,6 +74,9 @@ impl MemoryStore {
         }
     }
 
+    /// Generates a semantic embedding for the provided content using the local ONNX model (fastembed)
+    /// and stores it in the LanceDB vector database. This allows the agent to recall this specific
+    /// conceptual finding or architectural note later via `search()`.
     pub async fn memorize(
         &mut self,
         domain: &str,
@@ -120,6 +123,9 @@ impl MemoryStore {
         Ok(id)
     }
 
+    /// Performs a semantic search (RAG) against the vector database using a text query.
+    /// Converts the query into a vector representation and finds the `limit` nearest neighbors.
+    /// Can optionally filter by `domain` to restrict knowledge retrieval to a specific target.
     pub async fn search(
         &mut self,
         query: &str,
@@ -227,6 +233,8 @@ impl MemoryStore {
         })
     }
 
+    /// Retrieves the most recently added memories from the vector database without semantic filtering.
+    /// Useful for recalling what was just added to the long-term memory.
     pub async fn list_memories(
         &self,
         domain_filter: Option<&str>,

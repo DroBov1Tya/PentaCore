@@ -22,6 +22,8 @@ pub struct CreateEndpoint {
     pub notes: Option<String>,
 }
 
+/// Lists all discovered endpoints for a specific target domain.
+/// Can optionally filter the results by HTTP status code (e.g., to only show 200 OK or 403 Forbidden endpoints).
 pub async fn list(
     db: &SqlitePool,
     domain: &str,
@@ -46,6 +48,8 @@ pub async fn list(
         .await
 }
 
+/// Creates a new endpoint record or updates an existing one (upsert).
+/// Automatically creates the parent `target` record if the domain does not exist yet.
 pub async fn create(db: &SqlitePool, domain: &str, input: &CreateEndpoint) -> sqlx::Result<i64> {
     ensure_target(db, domain).await?;
 

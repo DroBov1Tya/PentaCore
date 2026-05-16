@@ -3,6 +3,8 @@ use crate::app::database::queries::test_objects;
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Registers a newly created artifact (like a mock user, test post, or API key) in the database.
+/// If `rollback_url` and `rollback_method` are provided, the object can be automatically cleaned up later.
 pub async fn handle_claim_test_object(args: &Value, state: &Arc<AppState>) -> String {
     let domain = args["domain"].as_str().unwrap_or("");
     let input = test_objects::ClaimTestObject {
@@ -22,6 +24,9 @@ pub async fn handle_claim_test_object(args: &Value, state: &Arc<AppState>) -> St
     }
 }
 
+/// Automates the cleanup of a claimed test object.
+/// If the object has a rollback HTTP configuration, it executes the HTTP request
+/// (e.g., sending a DELETE request to an API endpoint) before marking the object as rolled back.
 pub async fn handle_rollback_test_object(args: &Value, state: &Arc<AppState>) -> String {
     let obj_id = args["id"].as_i64().unwrap_or(0);
     if obj_id == 0 {
@@ -62,6 +67,8 @@ pub async fn handle_rollback_test_object(args: &Value, state: &Arc<AppState>) ->
     }
 }
 
+/// Retrieves a list of active or rolled-back test objects for a specific domain.
+/// Used for tracking what test data was created during an audit to ensure complete cleanup.
 pub async fn handle_get_test_objects(args: &Value, state: &Arc<AppState>) -> String {
     let domain = args["domain"].as_str().unwrap_or("");
     let status_filter = args["status"].as_str();

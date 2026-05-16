@@ -3,6 +3,8 @@ use crate::app::database::queries::{attack_chains, credentials, findings};
 use serde_json::Value;
 use std::sync::Arc;
 
+/// Retrieves a list of discovered vulnerabilities (findings) for a target domain.
+/// Can be filtered by severity or status to focus on specific findings.
 pub async fn handle_get_findings(args: &Value, state: &Arc<AppState>) -> String {
     let domain = args["domain"].as_str().unwrap_or("");
     match findings::list(
@@ -18,6 +20,9 @@ pub async fn handle_get_findings(args: &Value, state: &Arc<AppState>) -> String 
     }
 }
 
+/// Registers a new vulnerability finding in the database.
+/// Incorporates a Quality Gate: if the finding is marked as 'confirmed',
+/// it strictly requires valid evidence (e.g., PoC, response body) to be provided.
 pub async fn handle_save_finding(args: &Value, state: &Arc<AppState>) -> String {
     let domain = args["domain"].as_str().unwrap_or("");
     let input = findings::CreateFinding {
@@ -45,6 +50,8 @@ pub async fn handle_save_finding(args: &Value, state: &Arc<AppState>) -> String 
     }
 }
 
+/// Updates the metadata (status, severity, evidence, description) of an existing finding.
+/// Incorporates the same Quality Gate: escalating status to 'confirmed' requires evidence.
 pub async fn handle_update_finding(args: &Value, state: &Arc<AppState>) -> String {
     let id = match args["id"].as_i64() {
         Some(i) => i,
