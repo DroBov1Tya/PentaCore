@@ -111,30 +111,46 @@ pub struct UpdateFinding {
 
 pub async fn update(db: &SqlitePool, id: i64, input: &UpdateFinding) -> sqlx::Result<bool> {
     let mut query_parts = Vec::new();
-    
-    if input.severity.is_some() { query_parts.push("severity = ?"); }
-    if input.status.is_some() { query_parts.push("status = ?"); }
-    if input.evidence.is_some() { query_parts.push("evidence = ?"); }
-    if input.description.is_some() { query_parts.push("description = ?"); }
-    
+
+    if input.severity.is_some() {
+        query_parts.push("severity = ?");
+    }
+    if input.status.is_some() {
+        query_parts.push("status = ?");
+    }
+    if input.evidence.is_some() {
+        query_parts.push("evidence = ?");
+    }
+    if input.description.is_some() {
+        query_parts.push("description = ?");
+    }
+
     if query_parts.is_empty() {
         return Ok(true);
     }
-    
+
     let sql = format!(
         "UPDATE findings SET {} WHERE id = ?",
         query_parts.join(", ")
     );
-    
+
     let mut query = sqlx::query(&sql);
-    
-    if let Some(ref s) = input.severity { query = query.bind(s); }
-    if let Some(ref s) = input.status { query = query.bind(s); }
-    if let Some(ref s) = input.evidence { query = query.bind(s); }
-    if let Some(ref s) = input.description { query = query.bind(s); }
-    
+
+    if let Some(ref s) = input.severity {
+        query = query.bind(s);
+    }
+    if let Some(ref s) = input.status {
+        query = query.bind(s);
+    }
+    if let Some(ref s) = input.evidence {
+        query = query.bind(s);
+    }
+    if let Some(ref s) = input.description {
+        query = query.bind(s);
+    }
+
     query = query.bind(id);
-    
+
     let result = query.execute(db).await?;
     Ok(result.rows_affected() > 0)
 }

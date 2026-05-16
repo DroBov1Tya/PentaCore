@@ -1,11 +1,7 @@
 use serde_json::{Value, json};
 
-const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
-    "2025-11-25",
-    "2025-06-18",
-    "2025-03-26",
-    "2024-11-05",
-];
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 pub fn initialize_msg(id: &Value, requested_version: &str) -> Value {
     let version_to_use = if SUPPORTED_PROTOCOL_VERSIONS.contains(&requested_version) {
@@ -269,7 +265,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "endpoint_id": { "type": "integer" }, "vector": { "type": "string" },
+                            "endpoint_id": { "type": "integer" }, "vector": { "type": "string", "enum": ["sqli", "xss", "ssrf", "csrf", "idor", "bola", "rce", "lfi", "xxe", "ssti", "auth", "cors", "other"] },
                             "status": { "type": "string", "enum": ["pending", "in_progress", "done", "skipped"] },
                             "description": { "type": "string" }, "notes": { "type": "string" }
                         },
@@ -403,7 +399,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "make_request",
-                    "description": "Make an HTTP request using global session context and automatically save it to the DB.",
+                    "description": "Make an HTTP request using global session context. Returns a JSON string with 'status', 'hint' (recon or auth hints), and 'body' fields.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -446,6 +442,19 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "request_id_b": { "type": "integer", "description": "ID of the second request to compare." }
                         },
                         "required": ["request_id_a", "request_id_b"]
+                    }
+                },
+                {
+                    "name": "replay_as",
+                    "description": "Replay a previously saved HTTP request but with a different set of cookies/headers to test for IDOR and authorization flaws. This automatically fetches the original request by ID, strips its auth tokens, injects the new ones, and sends it.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "request_id": { "type": "integer", "description": "ID of the saved request to replay." },
+                            "cookies": { "type": "array", "items": { "type": "string" }, "description": "Array of cookie strings (e.g., 'session=XYZ') to inject." },
+                            "auth_token": { "type": "string", "description": "Optional Bearer token to inject." }
+                        },
+                        "required": ["request_id"]
                     }
                 },
                 {
@@ -500,7 +509,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                                     "type": "object",
                                     "properties": {
                                         "endpoint_id": { "type": "integer" },
-                                        "vector": { "type": "string" },
+                                        "vector": { "type": "string", "enum": ["sqli", "xss", "ssrf", "csrf", "idor", "bola", "rce", "lfi", "xxe", "ssti", "auth", "cors", "other"] },
                                         "status": { "type": "string", "enum": ["pending", "in_progress", "done", "skipped"] },
                                         "description": { "type": "string" },
                                         "notes": { "type": "string" }

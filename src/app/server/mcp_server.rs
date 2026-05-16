@@ -102,7 +102,9 @@ pub async fn handle_request(req: &Value, state: &Arc<AppState>) -> Value {
 
     let response = match method {
         "initialize" => {
-            let requested_version = req["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05");
+            let requested_version = req["params"]["protocolVersion"]
+                .as_str()
+                .unwrap_or("2024-11-05");
             messages::initialize_msg(id, requested_version)
         }
         "notifications/initialized" => return Value::Null,
@@ -169,6 +171,7 @@ async fn execute_tool(name: &str, args: &Value, state: &Arc<AppState>) -> String
         "revoke_session" => handlers::client::handle_revoke_session(args, state).await,
         "make_request" => handlers::client::handle_make_request(args, state).await,
         "make_race_requests" => handlers::client::handle_make_race_requests(args, state).await,
+        "replay_as" => handlers::client::handle_replay_as(args, state).await,
         "get_coverage" => handlers::coverage_requests::handle_get_coverage(args, state).await,
         "upsert_coverage" => handlers::coverage_requests::handle_upsert_coverage(args, state).await,
         "bulk_upsert_coverage" => {

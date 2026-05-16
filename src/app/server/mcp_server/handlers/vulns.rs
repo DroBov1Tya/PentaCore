@@ -32,6 +32,13 @@ pub async fn handle_save_finding(args: &Value, state: &Arc<AppState>) -> String 
         evidence: args["evidence"].as_str().map(String::from),
         description: args["description"].as_str().map(String::from),
     };
+
+    if input.status.as_deref() == Some("confirmed")
+        && input.evidence.as_deref().unwrap_or("").trim().is_empty()
+    {
+        return "QUALITY GATE FAILED: Cannot mark a finding as 'confirmed' without providing 'evidence'. Please provide proof of exploitation.".to_string();
+    }
+
     match findings::create(&state.db, domain, &input).await {
         Ok(id) => format!("Finding saved. ID: {}", id),
         Err(e) => format!("Error: {}", e),
@@ -43,14 +50,20 @@ pub async fn handle_update_finding(args: &Value, state: &Arc<AppState>) -> Strin
         Some(i) => i,
         None => return "Error: finding id is required".to_string(),
     };
-    
+
     let input = findings::UpdateFinding {
         severity: args["severity"].as_str().map(String::from),
         status: args["status"].as_str().map(String::from),
         evidence: args["evidence"].as_str().map(String::from),
         description: args["description"].as_str().map(String::from),
     };
-    
+
+    if input.status.as_deref() == Some("confirmed") {
+        if input.evidence.as_deref().unwrap_or("").trim().is_empty() {
+            return "QUALITY GATE FAILED: Cannot mark a finding as 'confirmed' without providing 'evidence' in the update.".to_string();
+        }
+    }
+
     match findings::update(&state.db, id, &input).await {
         Ok(true) => format!("Successfully updated finding {}", id),
         Ok(false) => format!("Finding {} not found or no changes made", id),

@@ -60,3 +60,17 @@ pub async fn create(db: &SqlitePool, endpoint_id: i64, input: &CreateRequest) ->
 
     Ok(result.last_insert_rowid())
 }
+
+pub async fn get(db: &SqlitePool, id: i64) -> sqlx::Result<Option<RequestRow>> {
+    let sql = r#"
+        SELECT id, endpoint_id, raw_request, raw_response,
+               status_code, response_time_ms, description, notes, created_at
+        FROM requests
+        WHERE id = ?
+    "#;
+
+    sqlx::query_as::<_, RequestRow>(sql)
+        .bind(id)
+        .fetch_optional(db)
+        .await
+}
