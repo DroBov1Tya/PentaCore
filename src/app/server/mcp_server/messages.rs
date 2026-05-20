@@ -1,11 +1,20 @@
 use serde_json::{Value, json};
 
-pub fn initialize_msg(id: &Value) -> Value {
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+pub fn initialize_msg(id: &Value, requested_version: &str) -> Value {
+    let version_to_use = if SUPPORTED_PROTOCOL_VERSIONS.contains(&requested_version) {
+        requested_version
+    } else {
+        "2024-11-05" // fallback
+    };
+
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": version_to_use,
             "capabilities": {
                 "tools": {},
                 "resources": {}
@@ -43,15 +52,25 @@ pub fn resources_read_msg(id: &Value, server_path: &str) -> Value {
                 "uri": "pentest://instructions",
                 "mimeType": "text/markdown",
                 "text": format!("## PentaCore MCP
-Persistent context store for pentest sessions. Saves tokens by giving structured, queryable memory across sessions.
+Persistent context store for pentest sessions with methodology-driven workflow.
 **NOTE TO AI:** You can use this MCP server OR you can make standard HTTP REST requests to localhost:{} if you find it more convenient. Both methods work and modify the same database.
 
+### Operational Cycle (OODA)
+Every action follows this loop:
+1. **Observe** — call `recall_engagement_state` to see current state
+2. **Orient** — call `get_phase_playbook` to understand phase + applicable techniques
+3. **Decide** — pick ONE technique, check `recall_similar_situations` for relevant lessons
+4. **Act** — execute via appropriate tool
+5. **Reflect** — call `record_lesson` with structured outcome; use `save_dead_end` if it failed
+
 ### Rules
-- ALWAYS start session with `get_scope`
+- ALWAYS start session with `get_scope` then `get_phase_playbook`
+- Use `save_hypothesis` to track attack ideas — update status as you test them
 - A finding is confirmed only with a reproducible PoC — use status=potential until then
 - Save raw request and response for every finding — this is your evidence base
+- Use `save_dead_end` when a technique fails — prevents re-exploration loops
+- Use `transition_phase` to move between methodology phases explicitly
 - No findings means incomplete coverage, not a clean target
-- Check coverage before closing a phase
 
 ### Networking & Sessions
 - Use `set_session` to globally configure authentication tokens and cookies.
@@ -70,11 +89,6 @@ pub fn tools_list_msg(id: &Value) -> Value {
         "id": id,
         "result": {
             "tools": [
-                {
-                    "name": "get_summary",
-                    "description": "Full target picture in one request. Restores session context.",
-                    "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
-                },
                 {
                     "name": "get_scope",
                     "description": "Get engagement rules and scope for a target.",
@@ -108,6 +122,82 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "description": { "type": "string" }
                         },
                         "required": ["from_domain", "to_domain", "rel_type"]
+                    }
+                },
+                {
+                    "name": "memorize_concept",
+                    "description": "Store a concept, text snippet, document, or finding into the RAG memory store for semantic search later.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "The target domain this memory belongs to" },
+                            "category": { "type": "string", "description": "Category of the memory (e.g., 'auth_bypass_idea', 'raw_docs', 'graphql_schema')" },
+                            "title": { "type": "string", "description": "Short, descriptive title" },
+                            "content": { "type": "string", "description": "The actual text/data to memorize" },
+                            "tags": { "type": "array", "items": { "type": "string" }, "description": "Array of tags" }
+                        },
+                        "required": ["domain", "category", "title", "content"]
+                    }
+                },
+                {
+                    "name": "search_knowledge",
+                    "description": "Search the RAG memory store using semantic similarity (LanceDB vector search).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string", "description": "The natural language or code query to search for" },
+                            "domain": { "type": "string", "description": "Optional domain to filter results" },
+                            "limit": { "type": "integer", "description": "Max number of results to return (default 5)" }
+                        },
+                        "required": ["query"]
+                    }
+                },
+                {
+                    "name": "list_memories",
+                    "description": "List stored memories without semantic search. Use this to browse what has been saved.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "Optional domain to filter results" },
+                            "limit": { "type": "integer", "description": "Max number of results to return (default 10)" }
+                        }
+                    }
+                },
+                {
+                    "name": "forget_memory",
+                    "description": "Delete a memory note by ID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "The UUID string of the memory to delete" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "get_memory",
+                    "description": "Retrieve a single memory by ID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "The UUID string of the memory" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "update_memory",
+                    "description": "Update an existing memory by ID. Only provided fields are updated.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "The UUID of the memory to update" },
+                            "category": { "type": "string" },
+                            "title": { "type": "string" },
+                            "content": { "type": "string" },
+                            "tags": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["id"]
                     }
                 },
                 {
@@ -155,6 +245,21 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     }
                 },
                 {
+                    "name": "update_finding",
+                    "description": "Update an existing vulnerability finding. Use this to change status (e.g. potential -> confirmed/false_positive), update severity, or add evidence.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer", "description": "The ID of the finding to update" },
+                            "severity": { "type": "string", "enum": ["info", "low", "medium", "high", "critical"] },
+                            "status": { "type": "string", "enum": ["potential", "confirmed", "false_positive"] },
+                            "evidence": { "type": "string" },
+                            "description": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
                     "name": "get_coverage",
                     "description": "Get test coverage for an endpoint.",
                     "inputSchema": { "type": "object", "properties": { "endpoint_id": { "type": "integer" }, "status": { "type": "string" } }, "required": ["endpoint_id"] }
@@ -165,7 +270,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "endpoint_id": { "type": "integer" }, "vector": { "type": "string" },
+                            "endpoint_id": { "type": "integer" }, "vector": { "type": "string", "enum": ["sqli", "xss", "ssrf", "csrf", "idor", "bola", "rce", "lfi", "xxe", "ssti", "auth", "cors", "other"] },
                             "status": { "type": "string", "enum": ["pending", "in_progress", "done", "skipped"] },
                             "description": { "type": "string" }, "notes": { "type": "string" }
                         },
@@ -200,6 +305,24 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "description": { "type": "string" }
                         },
                         "required": ["domain", "type", "secret"]
+                    }
+                },
+                {
+                    "name": "get_proxies",
+                    "description": "List proxies for a target.",
+                    "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
+                },
+                {
+                    "name": "save_proxy",
+                    "description": "Save a proxy.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" }, "url": { "type": "string" },
+                            "type": { "type": "string", "enum": ["http", "socks5", "burp"] },
+                            "active": { "type": "integer" }, "description": { "type": "string" }, "notes": { "type": "string" }
+                        },
+                        "required": ["domain", "url", "type"]
                     }
                 },
                 {
@@ -281,7 +404,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "make_request",
-                    "description": "Make an HTTP request using global session context and automatically save it to the DB.",
+                    "description": "Make an HTTP request using global session context. Returns a JSON string with 'status', 'headers', 'hint' (recon or auth hints), and 'body' fields. Supports custom HTTP versions, schemas, and overriding headers.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -291,6 +414,9 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "cookies": { "type": "array", "items": { "type": "string" } },
                             "proxy": { "type": "string" },
                             "user_agent": { "type": "string", "description": "Optional custom User-Agent. If omitted, a random browser UA is used." },
+                            "http_version": { "type": "string", "description": "Optional HTTP version (e.g. '1.0', '1.1', '2.0'). Defaults to '1.1'." },
+                            "scheme": { "type": "string", "description": "Optional URL scheme (e.g. 'http', 'https', 'gopher', 'file'). If non-http, curl is used natively." },
+                            "custom_headers": { "type": "object", "description": "Optional dictionary of custom headers to include (e.g., {'Authorization': 'NTLM TlR...', 'X-Forwarded-For': '127.0.0.1'})." },
                             "endpoint_id": { "type": "integer", "description": "Optional ID to link the request evidence to." }
                         },
                         "required": ["method", "url"]
@@ -324,6 +450,19 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "request_id_b": { "type": "integer", "description": "ID of the second request to compare." }
                         },
                         "required": ["request_id_a", "request_id_b"]
+                    }
+                },
+                {
+                    "name": "replay_as",
+                    "description": "Replay a previously saved HTTP request but with a different set of cookies/headers to test for IDOR and authorization flaws. This automatically fetches the original request by ID, strips its auth tokens, injects the new ones, and sends it.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "request_id": { "type": "integer", "description": "ID of the saved request to replay." },
+                            "cookies": { "type": "array", "items": { "type": "string" }, "description": "Array of cookie strings (e.g., 'session=XYZ') to inject." },
+                            "auth_token": { "type": "string", "description": "Optional Bearer token to inject." }
+                        },
+                        "required": ["request_id"]
                     }
                 },
                 {
@@ -378,7 +517,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                                     "type": "object",
                                     "properties": {
                                         "endpoint_id": { "type": "integer" },
-                                        "vector": { "type": "string" },
+                                        "vector": { "type": "string", "enum": ["sqli", "xss", "ssrf", "csrf", "idor", "bola", "rce", "lfi", "xxe", "ssti", "auth", "cors", "other"] },
                                         "status": { "type": "string", "enum": ["pending", "in_progress", "done", "skipped"] },
                                         "description": { "type": "string" },
                                         "notes": { "type": "string" }
@@ -465,6 +604,128 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "url": { "type": "string", "description": "URL to the GraphQL introspection JSON file." },
                             "json": { "type": "string", "description": "Raw JSON string if URL is not available." },
                             "base_endpoint": { "type": "string", "description": "The base path for GraphQL, e.g. '/graphql'. Default is '/graphql'." }
+                        },
+                        "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "get_phase_playbook",
+                    "description": "Get current methodology phase, checklist, transition options, and auto-recalled lessons from past engagements. This is the 'brain' — call it to understand where you are and what to do next.",
+                    "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
+                },
+                {
+                    "name": "transition_phase",
+                    "description": "Explicitly move to a new methodology phase. Phases: setup, recon, enumeration, vuln_mapping, exploitation, post_exploitation, reporting.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "to_phase": { "type": "string", "enum": ["setup","recon","enumeration","vuln_mapping","exploitation","post_exploitation","reporting"] },
+                            "reason": { "type": "string" }
+                        },
+                        "required": ["domain", "to_phase"]
+                    }
+                },
+                {
+                    "name": "save_hypothesis",
+                    "description": "Record an attack hypothesis to track. Update its status as you test it.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "hypothesis": { "type": "string", "description": "The attack idea or question" },
+                            "source": { "type": "string", "description": "What triggered this hypothesis" }
+                        },
+                        "required": ["domain", "hypothesis"]
+                    }
+                },
+                {
+                    "name": "get_hypotheses",
+                    "description": "List tracked hypotheses for a target.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "status": { "type": "string", "enum": ["open","testing","confirmed","rejected"] }
+                        },
+                        "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "update_hypothesis",
+                    "description": "Update hypothesis status or add evidence.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer" },
+                            "status": { "type": "string", "enum": ["open","testing","confirmed","rejected"] },
+                            "evidence": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "save_dead_end",
+                    "description": "Record a technique that was tried and failed. Prevents re-exploration loops.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "technique": { "type": "string", "description": "What was tried" },
+                            "target_info": { "type": "string", "description": "Against what (endpoint, service, etc.)" },
+                            "reason": { "type": "string", "description": "Why it failed" }
+                        },
+                        "required": ["domain", "technique", "reason"]
+                    }
+                },
+                {
+                    "name": "recall_engagement_state",
+                    "description": "Get a filtered view of the engagement. Lens options: 'progress' (stats + phase), 'hosts' (subdomains + infra), 'creds' (credentials), 'open_hypotheses', 'dead_ends', 'attack_surface' (untested endpoints + pending vectors).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "lens": { "type": "string", "enum": ["progress","hosts","creds","open_hypotheses","dead_ends","attack_surface"] }
+                        },
+                        "required": ["domain", "lens"]
+                    }
+                },
+                {
+                    "name": "record_lesson",
+                    "description": "Record a structured lesson from this engagement into episodic memory. Will be auto-recalled in future similar situations.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "trigger_pattern": { "type": "string", "description": "What was observed" },
+                            "hypothesis": { "type": "string", "description": "What was hypothesized" },
+                            "action_taken": { "type": "string", "description": "What was done" },
+                            "outcome": { "type": "string", "description": "What happened" },
+                            "lesson": { "type": "string", "description": "Generalized takeaway" },
+                            "tags": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["domain", "trigger_pattern", "lesson"]
+                    }
+                },
+                {
+                    "name": "recall_similar_situations",
+                    "description": "Search episodic memory for lessons from past engagements matching a situation description.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "situation": { "type": "string", "description": "Describe what you're seeing now" },
+                            "limit": { "type": "integer", "description": "Max results (default 5)" }
+                        },
+                        "required": ["situation"]
+                    }
+                },
+                {
+                    "name": "generate_report",
+                    "description": "Generate a structured security audit report from all stored data: scope, findings (sorted by severity), coverage summary, and appendix with subdomains/credentials/cleanup status. Use this for final bug bounty submission.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string", "description": "Target domain to generate report for" }
                         },
                         "required": ["domain"]
                     }

@@ -15,7 +15,17 @@ pub async fn start(state: Arc<AppState>) -> Result<()> {
         tracing::info!("🧹 Removed old socket");
     }
 
-    let listener = DualListener::bind(format!("{}", &server_path)).await?;
+    let listener = match DualListener::bind(format!("{}", &server_path)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(
+                "⚠️ Could not bind API listener on {}: {}. REST API will not be available, but MCP stdio will continue.",
+                &server_path,
+                e
+            );
+            return Ok(());
+        }
+    };
     tracing::info!("🚀 API listening on {}", &server_path);
 
     let app = routes::build_router(state);

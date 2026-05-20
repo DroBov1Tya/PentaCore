@@ -126,6 +126,66 @@ CREATE TABLE IF NOT EXISTS chain_steps (
     UNIQUE(chain_id, step_order)
 );
 
+CREATE TABLE IF NOT EXISTS test_objects (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id       INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    object_type     TEXT NOT NULL,
+    object_id       TEXT NOT NULL,
+    description     TEXT,
+    rollback_method TEXT,
+    rollback_url    TEXT,
+    rollback_body   TEXT,
+    status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active','rolled_back','orphaned')),
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS endpoint_examples (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint_id     INTEGER NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+    raw_request     TEXT NOT NULL,
+    raw_response    TEXT,
+    status_code     INTEGER,
+    description     TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(endpoint_id)
+);
+
+CREATE TABLE IF NOT EXISTS hypotheses (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    hypothesis  TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open','testing','confirmed','rejected')),
+    evidence    TEXT,
+    source      TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dead_ends (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    technique   TEXT NOT NULL,
+    target_info TEXT,
+    reason      TEXT NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS phase_transitions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    from_phase  TEXT NOT NULL,
+    to_phase    TEXT NOT NULL,
+    reason      TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_test_objects_target ON test_objects(target_id, status);
+CREATE INDEX IF NOT EXISTS idx_endpoint_examples   ON endpoint_examples(endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_target       ON hypotheses(target_id, status);
+CREATE INDEX IF NOT EXISTS idx_dead_ends_target        ON dead_ends(target_id);
+CREATE INDEX IF NOT EXISTS idx_phase_transitions_target ON phase_transitions(target_id);
 CREATE INDEX IF NOT EXISTS idx_scopes_target         ON scopes(target_id);
 CREATE INDEX IF NOT EXISTS idx_relations_from        ON target_relations(from_id);
 CREATE INDEX IF NOT EXISTS idx_relations_to          ON target_relations(to_id);

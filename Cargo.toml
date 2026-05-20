@@ -1,12 +1,13 @@
 [package]
 name = "PentaCore"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
 axum = "0.8.9"
 axum-listener = "0.3.0"
+chrono = "0.4"
 clap = "4.6.1"
 colored = "3.1.1"
 dotenv = "0.15.0"
@@ -15,10 +16,16 @@ obfstr = "0.4.4"
 rand = "0.10.1"
 ratatui = "0.30.0"
 regex = "1.12.3"
-reqwest = { version = "0.13.3", features = ["json", "socks", "rustls"] }
+reqwest = { version = "0.13.3", features = ["json", "socks", "rustls", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "rust_decimal"] }
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "ansi"] }
+fastembed = "5.13.4"
+lancedb = "0.29.0"
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
+uuid = { version = "1.23.1", features = ["v4"] }
+futures = "0.3.32"
