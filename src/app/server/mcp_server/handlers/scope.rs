@@ -1,16 +1,7 @@
 use crate::app::AppState;
-use crate::app::database::queries::{scope, summary};
+use crate::app::database::queries::scope;
 use serde_json::Value;
 use std::sync::Arc;
-
-pub async fn handle_get_summary(args: &Value, state: &Arc<AppState>) -> String {
-    let domain = args["domain"].as_str().unwrap_or("");
-    match summary::get(&state.db, domain).await {
-        Ok(Some(s)) => serde_json::to_string_pretty(&s).unwrap_or_default(),
-        Ok(None) => "Target not found".to_string(),
-        Err(e) => format!("Error: {}", e),
-    }
-}
 
 pub async fn handle_get_scope(args: &Value, state: &Arc<AppState>) -> String {
     let domain = args["domain"].as_str().unwrap_or("");

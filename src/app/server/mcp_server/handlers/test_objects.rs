@@ -43,6 +43,8 @@ pub async fn handle_rollback_test_object(args: &Value, state: &Arc<AppState>) ->
                     body: obj.rollback_body.unwrap_or_default(),
                     proxy: None,
                     user_agent: None,
+                    http_version: None,
+                    custom_headers: None,
                 };
                 match crate::app::client::req::make_req(prereq).await {
                     Ok(resp) => format!(

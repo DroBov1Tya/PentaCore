@@ -63,6 +63,8 @@ pub async fn make_request_handler(
         body: body.clone(),
         proxy: payload.proxy,
         user_agent: payload.user_agent,
+        http_version: None,
+        custom_headers: None,
     };
 
     let req_str = format!(
@@ -140,6 +142,8 @@ pub async fn make_race_requests_handler(
             body: payload.body.clone(),
             proxy: payload.proxy.clone(),
             user_agent: payload.user_agent.clone(),
+            http_version: None,
+            custom_headers: None,
         };
         let sem = semaphore.clone();
         handles.push(tokio::spawn(async move {

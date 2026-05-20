@@ -52,15 +52,25 @@ pub fn resources_read_msg(id: &Value, server_path: &str) -> Value {
                 "uri": "pentest://instructions",
                 "mimeType": "text/markdown",
                 "text": format!("## PentaCore MCP
-Persistent context store for pentest sessions. Saves tokens by giving structured, queryable memory across sessions.
+Persistent context store for pentest sessions with methodology-driven workflow.
 **NOTE TO AI:** You can use this MCP server OR you can make standard HTTP REST requests to localhost:{} if you find it more convenient. Both methods work and modify the same database.
 
+### Operational Cycle (OODA)
+Every action follows this loop:
+1. **Observe** — call `recall_engagement_state` to see current state
+2. **Orient** — call `get_phase_playbook` to understand phase + applicable techniques
+3. **Decide** — pick ONE technique, check `recall_similar_situations` for relevant lessons
+4. **Act** — execute via appropriate tool
+5. **Reflect** — call `record_lesson` with structured outcome; use `save_dead_end` if it failed
+
 ### Rules
-- ALWAYS start session with `get_scope`
+- ALWAYS start session with `get_scope` then `get_phase_playbook`
+- Use `save_hypothesis` to track attack ideas — update status as you test them
 - A finding is confirmed only with a reproducible PoC — use status=potential until then
 - Save raw request and response for every finding — this is your evidence base
+- Use `save_dead_end` when a technique fails — prevents re-exploration loops
+- Use `transition_phase` to move between methodology phases explicitly
 - No findings means incomplete coverage, not a clean target
-- Check coverage before closing a phase
 
 ### Networking & Sessions
 - Use `set_session` to globally configure authentication tokens and cookies.
@@ -79,11 +89,6 @@ pub fn tools_list_msg(id: &Value) -> Value {
         "id": id,
         "result": {
             "tools": [
-                {
-                    "name": "get_summary",
-                    "description": "Full target picture in one request. Restores session context.",
-                    "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
-                },
                 {
                     "name": "get_scope",
                     "description": "Get engagement rules and scope for a target.",
@@ -399,7 +404,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "make_request",
-                    "description": "Make an HTTP request using global session context. Returns a JSON string with 'status', 'hint' (recon or auth hints), and 'body' fields.",
+                    "description": "Make an HTTP request using global session context. Returns a JSON string with 'status', 'headers', 'hint' (recon or auth hints), and 'body' fields. Supports custom HTTP versions, schemas, and overriding headers.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -409,6 +414,9 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "cookies": { "type": "array", "items": { "type": "string" } },
                             "proxy": { "type": "string" },
                             "user_agent": { "type": "string", "description": "Optional custom User-Agent. If omitted, a random browser UA is used." },
+                            "http_version": { "type": "string", "description": "Optional HTTP version (e.g. '1.0', '1.1', '2.0'). Defaults to '1.1'." },
+                            "scheme": { "type": "string", "description": "Optional URL scheme (e.g. 'http', 'https', 'gopher', 'file'). If non-http, curl is used natively." },
+                            "custom_headers": { "type": "object", "description": "Optional dictionary of custom headers to include (e.g., {'Authorization': 'NTLM TlR...', 'X-Forwarded-For': '127.0.0.1'})." },
                             "endpoint_id": { "type": "integer", "description": "Optional ID to link the request evidence to." }
                         },
                         "required": ["method", "url"]
@@ -601,14 +609,114 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     }
                 },
                 {
-                    "name": "next_actions",
-                    "description": "Analyze the full audit state (scope, endpoints, coverage, findings, test objects) and return a prioritized checklist of next steps. Use this at the start of every session and before declaring 'done'.",
+                    "name": "get_phase_playbook",
+                    "description": "Get current methodology phase, checklist, transition options, and auto-recalled lessons from past engagements. This is the 'brain' — call it to understand where you are and what to do next.",
+                    "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
+                },
+                {
+                    "name": "transition_phase",
+                    "description": "Explicitly move to a new methodology phase. Phases: setup, recon, enumeration, vuln_mapping, exploitation, post_exploitation, reporting.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "domain": { "type": "string", "description": "Target domain to analyze" }
+                            "domain": { "type": "string" },
+                            "to_phase": { "type": "string", "enum": ["setup","recon","enumeration","vuln_mapping","exploitation","post_exploitation","reporting"] },
+                            "reason": { "type": "string" }
+                        },
+                        "required": ["domain", "to_phase"]
+                    }
+                },
+                {
+                    "name": "save_hypothesis",
+                    "description": "Record an attack hypothesis to track. Update its status as you test it.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "hypothesis": { "type": "string", "description": "The attack idea or question" },
+                            "source": { "type": "string", "description": "What triggered this hypothesis" }
+                        },
+                        "required": ["domain", "hypothesis"]
+                    }
+                },
+                {
+                    "name": "get_hypotheses",
+                    "description": "List tracked hypotheses for a target.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "status": { "type": "string", "enum": ["open","testing","confirmed","rejected"] }
                         },
                         "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "update_hypothesis",
+                    "description": "Update hypothesis status or add evidence.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer" },
+                            "status": { "type": "string", "enum": ["open","testing","confirmed","rejected"] },
+                            "evidence": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }
+                },
+                {
+                    "name": "save_dead_end",
+                    "description": "Record a technique that was tried and failed. Prevents re-exploration loops.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "technique": { "type": "string", "description": "What was tried" },
+                            "target_info": { "type": "string", "description": "Against what (endpoint, service, etc.)" },
+                            "reason": { "type": "string", "description": "Why it failed" }
+                        },
+                        "required": ["domain", "technique", "reason"]
+                    }
+                },
+                {
+                    "name": "recall_engagement_state",
+                    "description": "Get a filtered view of the engagement. Lens options: 'progress' (stats + phase), 'hosts' (subdomains + infra), 'creds' (credentials), 'open_hypotheses', 'dead_ends', 'attack_surface' (untested endpoints + pending vectors).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "lens": { "type": "string", "enum": ["progress","hosts","creds","open_hypotheses","dead_ends","attack_surface"] }
+                        },
+                        "required": ["domain", "lens"]
+                    }
+                },
+                {
+                    "name": "record_lesson",
+                    "description": "Record a structured lesson from this engagement into episodic memory. Will be auto-recalled in future similar situations.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "trigger_pattern": { "type": "string", "description": "What was observed" },
+                            "hypothesis": { "type": "string", "description": "What was hypothesized" },
+                            "action_taken": { "type": "string", "description": "What was done" },
+                            "outcome": { "type": "string", "description": "What happened" },
+                            "lesson": { "type": "string", "description": "Generalized takeaway" },
+                            "tags": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["domain", "trigger_pattern", "lesson"]
+                    }
+                },
+                {
+                    "name": "recall_similar_situations",
+                    "description": "Search episodic memory for lessons from past engagements matching a situation description.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "situation": { "type": "string", "description": "Describe what you're seeing now" },
+                            "limit": { "type": "integer", "description": "Max results (default 5)" }
+                        },
+                        "required": ["situation"]
                     }
                 },
                 {

@@ -31,6 +31,8 @@ pub async fn parse_openapi(
             body: "".to_string(),
             proxy: None,
             user_agent: None,
+            http_version: None,
+            custom_headers: None,
         };
         match crate::app::client::req::make_req(prereq).await {
             Ok(resp) => match resp.text().await {
@@ -70,6 +72,8 @@ pub async fn parse_graphql(
             body: "".to_string(),
             proxy: None,
             user_agent: None,
+            http_version: None,
+            custom_headers: None,
         };
         match crate::app::client::req::make_req(prereq).await {
             Ok(resp) => match resp.text().await {

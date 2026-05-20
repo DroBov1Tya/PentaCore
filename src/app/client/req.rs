@@ -15,6 +15,8 @@ pub struct PreRequest {
     pub body: String,
     pub proxy: Option<String>,
     pub user_agent: Option<String>,
+    pub http_version: Option<String>,
+    pub custom_headers: Option<std::collections::HashMap<String, String>>,
 }
 
 pub async fn make_req(prereq: PreRequest) -> Result<reqwest::Response> {
@@ -38,11 +40,37 @@ pub async fn make_req(prereq: PreRequest) -> Result<reqwest::Response> {
 
     let mut req_builder = client.request(method, &prereq.url);
 
+    if let Some(v) = &prereq.http_version {
+        match v.as_str() {
+            "1.0" | "HTTP/1.0" => req_builder = req_builder.version(reqwest::Version::HTTP_10),
+            "1.1" | "HTTP/1.1" => req_builder = req_builder.version(reqwest::Version::HTTP_11),
+            "2" | "2.0" | "HTTP/2" | "HTTP/2.0" => {
+                req_builder = req_builder.version(reqwest::Version::HTTP_2)
+            }
+            "3" | "3.0" | "HTTP/3" | "HTTP/3.0" => {
+                req_builder = req_builder.version(reqwest::Version::HTTP_3)
+            }
+            _ => {}
+        }
+    }
+
     if !prereq.body.is_empty() {
         req_builder = req_builder.body(prereq.body);
     }
 
     let mut headers = HeaderMap::new();
+
+    if let Some(custom) = prereq.custom_headers {
+        for (k, v) in custom {
+            use std::str::FromStr;
+            if let (Ok(name), Ok(val)) = (
+                reqwest::header::HeaderName::from_str(&k),
+                reqwest::header::HeaderValue::from_str(&v),
+            ) {
+                headers.insert(name, val);
+            }
+        }
+    }
 
     let session = load_session().await?;
 

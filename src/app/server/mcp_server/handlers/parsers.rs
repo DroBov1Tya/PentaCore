@@ -43,6 +43,8 @@ pub async fn handle_parse_api_spec(args: &Value, state: &Arc<AppState>) -> Strin
             body: "".to_string(),
             proxy: None,
             user_agent: None,
+            http_version: None,
+            custom_headers: None,
         };
         match crate::app::client::req::make_req(prereq).await {
             Ok(resp) => match resp.text().await {
@@ -81,6 +83,8 @@ pub async fn handle_parse_graphql_spec(args: &Value, state: &Arc<AppState>) -> S
             body: "".to_string(),
             proxy: None,
             user_agent: None,
+            http_version: None,
+            custom_headers: None,
         };
         match crate::app::client::req::make_req(prereq).await {
             Ok(resp) => match resp.text().await {

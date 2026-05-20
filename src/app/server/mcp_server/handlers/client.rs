@@ -42,6 +42,20 @@ pub async fn handle_make_request(args: &Value, state: &Arc<AppState>) -> String 
     let body = args["body"].as_str().unwrap_or("").to_string();
     let proxy = args["proxy"].as_str().map(String::from);
     let user_agent = args["user_agent"].as_str().map(String::from);
+    let http_version = args["http_version"].as_str().map(String::from);
+    let scheme_override = args["scheme"].as_str();
+
+    let mut custom_headers = None;
+    if let Some(obj) = args["custom_headers"].as_object() {
+        let mut map = std::collections::HashMap::new();
+        for (k, v) in obj {
+            if let Some(v_str) = v.as_str() {
+                map.insert(k.clone(), v_str.to_string());
+            }
+        }
+        custom_headers = Some(map);
+    }
+
     let cookies = args["cookies"]
         .as_array()
         .map(|a| {
@@ -52,24 +66,96 @@ pub async fn handle_make_request(args: &Value, state: &Arc<AppState>) -> String 
         .unwrap_or_default();
     let endpoint_id = args["endpoint_id"].as_i64();
 
+    let mut final_url = url.clone();
+    if let Some(s) = scheme_override {
+        if !final_url.contains("://") {
+            final_url = format!("{}://{}", s, final_url);
+        } else if final_url.starts_with("http://") && s == "https" {
+            final_url = final_url.replace("http://", "https://");
+        } else if final_url.starts_with("https://") && s == "http" {
+            final_url = final_url.replace("https://", "http://");
+        } else if s != "http" && s != "https" {
+            if let Some(pos) = final_url.find("://") {
+                final_url = format!("{}://{}", s, &final_url[pos + 3..]);
+            } else {
+                final_url = format!("{}://{}", s, final_url);
+            }
+        }
+    }
+
+    let is_http = final_url.starts_with("http://")
+        || final_url.starts_with("https://")
+        || (!final_url.contains("://") && scheme_override.is_none());
+
+    if !is_http {
+        // Fallback to CURL for non-HTTP schemes (file, gopher, dict)
+        let mut cmd = tokio::process::Command::new("curl");
+        cmd.arg("-s").arg("-L");
+
+        if method.to_uppercase() != "GET" {
+            cmd.arg("-X").arg(&method);
+        }
+        if !body.is_empty() {
+            cmd.arg("-d").arg(&body);
+        }
+        if let Some(h) = &custom_headers {
+            for (k, v) in h {
+                cmd.arg("-H").arg(format!("{}: {}", k, v));
+            }
+        }
+        cmd.arg(&final_url);
+
+        return match cmd.output().await {
+            Ok(out) => {
+                let status = if out.status.success() { 200 } else { 500 };
+                let mut out_body = String::from_utf8_lossy(&out.stdout).to_string();
+                let err_str = String::from_utf8_lossy(&out.stderr);
+                if !err_str.is_empty() {
+                    out_body.push_str("\n\n[CURL ERROR/STDERR]:\n");
+                    out_body.push_str(&err_str);
+                }
+
+                let response_obj = serde_json::json!({
+                    "status": status,
+                    "headers": {},
+                    "hint": serde_json::Value::Null,
+                    "body": out_body
+                });
+                serde_json::to_string_pretty(&response_obj).unwrap_or_default()
+            }
+            Err(e) => format!("CURL execution failed: {}", e),
+        };
+    }
+
     let prereq = crate::app::client::req::PreRequest {
         cookie: cookies,
         method: method.clone(),
-        url: url.clone(),
+        url: final_url.clone(),
         body: body.clone(),
         proxy,
         user_agent,
+        http_version,
+        custom_headers,
     };
 
     let req_str = format!(
         "{} {}\nBody: {}",
         method,
-        url,
+        final_url,
         if body.is_empty() { "[empty]" } else { &body }
     );
     match crate::app::client::req::make_req(prereq).await {
         Ok(resp) => {
             let status = resp.status().as_u16() as i64;
+
+            let mut out_headers = serde_json::Map::new();
+            for (k, v) in resp.headers() {
+                out_headers.insert(
+                    k.as_str().to_string(),
+                    serde_json::Value::String(v.to_str().unwrap_or("").to_string()),
+                );
+            }
+
             let max_size: u64 = 500 * 1024;
             let content_len = resp.content_length().unwrap_or(0);
 
@@ -120,6 +206,7 @@ pub async fn handle_make_request(args: &Value, state: &Arc<AppState>) -> String 
 
             let response_obj = serde_json::json!({
                 "status": status,
+                "headers": out_headers,
                 "hint": if hint.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(hint.trim().to_string()) },
                 "body": resp_text
             });
@@ -160,6 +247,8 @@ pub async fn handle_make_race_requests(args: &Value, _state: &Arc<AppState>) -> 
             body: body.clone(),
             proxy: proxy.clone(),
             user_agent: user_agent.clone(),
+            http_version: None,
+            custom_headers: None,
         };
         let sem = semaphore.clone();
         handles.push(tokio::spawn(async move {
@@ -246,6 +335,8 @@ pub async fn handle_replay_as(args: &Value, state: &Arc<AppState>) -> String {
         body: body.clone(),
         proxy: None,
         user_agent: None,
+        http_version: None,
+        custom_headers: None,
     };
 
     match crate::app::client::req::make_req(prereq).await {

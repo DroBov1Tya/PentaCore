@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod client;
 pub mod coverage_requests;
+pub mod methodology;
 pub mod parsers;
 pub mod proxies;
 pub mod rag;

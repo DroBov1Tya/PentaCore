@@ -12,12 +12,14 @@ mod server;
 
 use rag::store::MemoryStore;
 use server::mcp_server;
+use server::mcp_server::tool_registry::ToolRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: &'static Config,
     pub db: Pool<Sqlite>,
     pub memory_store: Arc<Mutex<MemoryStore>>,
+    pub registry: Arc<ToolRegistry>,
     pub shutdown: broadcast::Sender<()>,
 }
 
@@ -44,6 +46,7 @@ impl Application {
             cfg,
             db,
             memory_store,
+            registry: Arc::new(ToolRegistry::build()),
             shutdown,
         });
 

@@ -123,6 +123,109 @@ impl MemoryStore {
         Ok(id)
     }
 
+    /// Performs a semantic search filtered by category (e.g., "lesson", "technique").
+    /// Used by methodology layer to retrieve only structured episodic memories.
+    pub async fn search_by_category(
+        &mut self,
+        query: &str,
+        category: &str,
+        domain_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<SearchResult> {
+        let table = self.get_or_create_table().await?;
+        if table.count_rows(None).await? == 0 {
+            return Ok(SearchResult {
+                query: query.to_string(),
+                results: vec![],
+                total_memories: 0,
+            });
+        }
+
+        let query_vector = self.get_embedder()?.embed(query)?;
+        let total_memories = table.count_rows(None).await? as i64;
+
+        let filter = if let Some(d) = domain_filter {
+            format!("category = '{}' AND domain = '{}'", category, d)
+        } else {
+            format!("category = '{}'", category)
+        };
+
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .nearest_to(query_vector.as_slice())?
+            .limit(limit)
+            .only_if(filter)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        let mut results = Vec::new();
+        for batch in batches {
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let domains = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let cats = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let titles = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let contents = batch
+                .column(4)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let tags = batch
+                .column(5)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let distance_col = batch.column_by_name("_distance");
+
+            for i in 0..batch.num_rows() {
+                let parsed_tags: Vec<String> =
+                    serde_json::from_str(tags.value(i)).unwrap_or_default();
+                let dist = distance_col
+                    .and_then(|c| c.as_any().downcast_ref::<arrow_array::Float32Array>())
+                    .map(|arr| arr.value(i) as f64);
+
+                if let Some(d) = dist {
+                    if d > 0.8 {
+                        continue;
+                    }
+                }
+
+                results.push(MemoryNote {
+                    id: Some(ids.value(i).to_string()),
+                    domain: domains.value(i).to_string(),
+                    category: cats.value(i).to_string(),
+                    title: titles.value(i).to_string(),
+                    content: contents.value(i).to_string(),
+                    tags: parsed_tags,
+                    score: dist,
+                });
+            }
+        }
+
+        Ok(SearchResult {
+            query: query.to_string(),
+            results,
+            total_memories,
+        })
+    }
+
     /// Performs a semantic search (RAG) against the vector database using a text query.
     /// Converts the query into a vector representation and finds the `limit` nearest neighbors.
     /// Can optionally filter by `domain` to restrict knowledge retrieval to a specific target.
