@@ -233,6 +233,14 @@ impl ToolRegistry {
             h!(handlers::audit::handle_generate_report),
         );
 
+        // Agent orchestration
+        r.register("spawn_agent", h!(handlers::agents::handle_spawn_agent));
+        r.register(
+            "update_agent_status",
+            h!(handlers::agents::handle_update_agent_status),
+        );
+        r.register("list_agents", h!(handlers::agents::handle_list_agents));
+
         r
     }
 }

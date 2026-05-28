@@ -10,6 +10,7 @@ mod database;
 pub mod rag;
 mod server;
 
+use rag::knowledge_seed;
 use rag::store::MemoryStore;
 use server::mcp_server;
 use server::mcp_server::tool_registry::ToolRegistry;
@@ -38,9 +39,18 @@ impl Application {
 
         tracing::info!("🧠 Initializing embedded RAG memory (fastembed + lancedb)...");
         let lancedb_path = cfg.db_location.replace("mcp.db", ".lancedb");
-        let memory_store = Arc::new(Mutex::new(
-            MemoryStore::new(lancedb_path.replace("sqlite:", "").as_str()).await?,
-        ));
+        let mut store = MemoryStore::new(lancedb_path.replace("sqlite:", "").as_str()).await?;
+
+        let binary_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+        if let Err(e) = knowledge_seed::seed(&mut store, &db, &binary_dir).await {
+            tracing::warn!("⚠️  Base knowledge seed failed (non-fatal): {}", e);
+        }
+
+        let memory_store = Arc::new(Mutex::new(store));
 
         let state = Arc::new(AppState {
             cfg,

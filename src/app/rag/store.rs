@@ -74,9 +74,7 @@ impl MemoryStore {
         }
     }
 
-    /// Generates a semantic embedding for the provided content using the local ONNX model (fastembed)
-    /// and stores it in the LanceDB vector database. This allows the agent to recall this specific
-    /// conceptual finding or architectural note later via `search()`.
+    // Embeds content into the vector DB so the agent can find it later via search().
     pub async fn memorize(
         &mut self,
         domain: &str,
@@ -85,16 +83,32 @@ impl MemoryStore {
         content: &str,
         tags: &[String],
     ) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        self.memorize_with_id(&id, domain, category, title, content, tags)
+            .await?;
+        Ok(id)
+    }
+
+    // Same as memorize() but takes an explicit id. Use when you need a stable, deterministic ID
+    // that survives SQLite resets (e.g. the knowledge seeder).
+    pub async fn memorize_with_id(
+        &mut self,
+        id: &str,
+        domain: &str,
+        category: &str,
+        title: &str,
+        content: &str,
+        tags: &[String],
+    ) -> Result<()> {
         let table = self.get_or_create_table().await?;
 
-        let embed_text = format!("{} — {}", title, content);
+        let embed_text = format!("{}: {}", title, content);
         let vector = self.get_embedder()?.embed(&embed_text)?;
         let tags_json = serde_json::to_string(tags)?;
-        let id = Uuid::new_v4().to_string();
 
         let schema = table.schema().await?;
 
-        let id_arr = StringArray::from(vec![id.clone()]);
+        let id_arr = StringArray::from(vec![id.to_string()]);
         let domain_arr = StringArray::from(vec![domain]);
         let cat_arr = StringArray::from(vec![category]);
         let title_arr = StringArray::from(vec![title]);
@@ -120,7 +134,7 @@ impl MemoryStore {
 
         table.add(vec![batch]).execute().await?;
 
-        Ok(id)
+        Ok(())
     }
 
     /// Performs a semantic search filtered by category (e.g., "lesson", "technique").
@@ -202,7 +216,10 @@ impl MemoryStore {
                     .map(|arr| arr.value(i) as f64);
 
                 if let Some(d) = dist {
-                    if d > 0.8 {
+                    // AllMiniLML6V2 without explicit normalization produces distances in ~1.4–1.7
+                    // range even for semantically close matches. Threshold 1.7 passes relevant
+                    // results while filtering near-orthogonal noise (d > 1.8+).
+                    if d > 1.7 {
                         continue;
                     }
                 }
@@ -304,7 +321,7 @@ impl MemoryStore {
                     .map(|arr| arr.value(i) as f64);
 
                 if let Some(d) = dist {
-                    if d > 0.8 {
+                    if d > 1.7 {
                         continue;
                     }
                 }
@@ -319,14 +336,6 @@ impl MemoryStore {
                     score: dist,
                 });
             }
-        }
-
-        if results.is_empty() {
-            return Ok(SearchResult {
-                query: query.to_string(),
-                results: vec![],
-                total_memories,
-            });
         }
 
         Ok(SearchResult {
@@ -494,7 +503,7 @@ impl MemoryStore {
         self.forget(memory_id).await?;
 
         let table = self.get_or_create_table().await?;
-        let embed_text = format!("{} — {}", new_title, new_content);
+        let embed_text = format!("{}: {}", new_title, new_content);
         let vector = self.get_embedder()?.embed(&embed_text)?;
         let tags_json = serde_json::to_string(new_tags)?;
 

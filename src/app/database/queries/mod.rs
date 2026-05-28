@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod attack_chains;
 pub mod coverage;
 pub mod credentials;

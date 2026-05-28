@@ -198,3 +198,25 @@ CREATE INDEX IF NOT EXISTS idx_coverage_endpoint     ON coverage(endpoint_id, st
 CREATE INDEX IF NOT EXISTS idx_credentials_target    ON credentials(target_id);
 CREATE INDEX IF NOT EXISTS idx_chain_steps_chain     ON chain_steps(chain_id, step_order);
 CREATE INDEX IF NOT EXISTS idx_attack_chains_target  ON attack_chains(target_id, severity);
+
+CREATE TABLE IF NOT EXISTS knowledge_seeds (
+    source_key   TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    memory_id    TEXT NOT NULL,
+    seeded_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+    id           TEXT PRIMARY KEY,
+    domain       TEXT NOT NULL,
+    role         TEXT NOT NULL,
+    objective    TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'active'
+                     CHECK(status IN ('active','done','failed','cancelled')),
+    spawned_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    ended_at     DATETIME,
+    summary      TEXT,
+    artifact_ids TEXT DEFAULT '[]'
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_domain_status ON agents(domain, status);

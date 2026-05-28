@@ -57,18 +57,79 @@ Persistent context store for pentest sessions with methodology-driven workflow.
 
 ### Operational Cycle (OODA)
 Every action follows this loop:
-1. **Observe** — call `recall_engagement_state` to see current state
-2. **Orient** — call `get_phase_playbook` to understand phase + applicable techniques
-3. **Decide** — pick ONE technique, check `recall_similar_situations` for relevant lessons
-4. **Act** — execute via appropriate tool
-5. **Reflect** — call `record_lesson` with structured outcome; use `save_dead_end` if it failed
+1. **Observe** - call `recall_engagement_state` to see current state
+2. **Orient** - call `get_phase_playbook` to understand the current phase, then `search_knowledge` to pull relevant attack techniques and mental models
+3. **Decide** - pick ONE technique, check `recall_similar_situations` for relevant lessons
+4. **Act** - execute via appropriate tool
+5. **Reflect** - call `record_lesson` with structured outcome; use `save_dead_end` if it failed
+
+### Knowledge Base (RAG) - USE THIS PROACTIVELY
+The knowledge base contains pre-loaded security research techniques, mental models, and methodologies. **You MUST query it before starting any non-trivial task.**
+
+**Mandatory triggers - call `search_knowledge` when you:**
+- Start analyzing an unknown service, protocol, or codebase
+- Are about to write a PoC or exploit
+- See an interesting pattern (e.g. length field, auth check, state transition, crypto usage)
+- Don't know where to start on a target
+- Need a checklist for a vulnerability class
+- Want to understand how to approach binary/protocol research vs web testing
+
+**Pre-loaded categories:**
+- `mindset` - Mental models: attack surface decomposition, state machine confusion, differential analysis (patch diffing), taint analysis, STRIDE threat modeling, hypothesis-driven research, the 'what if attacker controls X' framework
+- `technique` - Specific attack techniques: auth logic bugs, JWT attacks, OAuth 2.0/OIDC exploitation, SSRF (cloud metadata, filter bypass, blind SSRF), HTTP request smuggling, web cache poisoning, GraphQL attacks, race conditions/TOCTOU, integer overflow, privilege escalation
+- `methodology` - Process guides: web whitebox/blackbox checklists, binary analysis, docker image auditing, infra/network pentesting, stack fingerprinting -> CVE -> exploit, patch diffing, code review for zero-days
+- `tools` - Tool reference and usage: recon tooling, web fuzzing, vulnerability scanning, network and AD tools, pivoting and C2, exposed services detection
+
+**IMPORTANT - domain parameter:**
+- To search the global knowledge base: **omit domain** or use `domain: \"global\"`
+- To search engagement-specific memories: pass the target domain
+- Mixing these loses global techniques - always query global KB separately first
+
+**Example queries that work well:**
+- `search_knowledge(query: \"how to find bugs in protocol length fields\", domain: \"global\")`
+- `search_knowledge(query: \"authentication bypass logic bugs\", domain: \"global\")`
+- `search_knowledge(query: \"first steps when analyzing unknown codebase\", domain: \"global\")`
+- `search_knowledge(query: \"integer overflow malloc\", domain: \"global\")`
+- `search_knowledge(query: \"race condition TOCTOU\", domain: \"global\")`
+- `search_knowledge(query: \"oauth jwt attack\", domain: \"global\")`
+- `search_knowledge(query: \"RBAC privilege escalation authorization bypass\", domain: \"global\")`
+
+**To add your own knowledge:** use `memorize_concept(domain: \"global\", category: \"technique\"|\"mindset\"|\"methodology\", ...)` - it will be available to all future sessions.
+
+### Agent Orchestration
+When a task can be parallelized, spawn sub-agents instead of doing everything sequentially yourself.
+
+**Orchestrator role:** decompose -> assign -> evaluate results -> synthesize. Do NOT execute tasks yourself when an agent can do it.
+
+**Pattern:**
+1. `spawn_agent(domain, role, objective)` -> get agent ID
+2. Launch the sub-agent with a narrow prompt that includes the ID
+3. Sub-agent: reads `recall_engagement_state()`, works, calls `update_agent_status(id, \"done\", summary, artifact_ids)`
+4. Orchestrator: `list_agents(domain)` to check completion, then `recall_engagement_state()` to read what they found
+
+**Sub-agent prompt must include:**
+- The agent ID and instruction to call `update_agent_status` when done
+- Explicit scope + explicit \"do NOT\" boundary
+- `recall_engagement_state()` at start, `save_hypothesis()` / `save_dead_end()` during work
+
+**Sweep is automatic:** finished agents older than 1 hour are deleted on the next `spawn_agent` call. No cleanup needed.
+
+### Session Start Sequence (mandatory, in this order)
+Every new engagement begins with these four calls - no exceptions:
+1. `search_knowledge(query: \"where to start engagement router checklist scenario\", domain: \"global\", limit: 1)` - fetches the scenario router that maps what you have (web/binary/docker/infra/source) to the exact step-by-step checklist
+2. `get_scope(domain)` - load rules and objective for this target
+3. `get_phase_playbook(domain)` - understand current methodology phase and what to do next
+4. `search_knowledge(query: \"<describe attack surface>\", domain: \"global\")` - pull relevant techniques and mental models
+
+Do not skip or reorder these steps. The router in step 1 tells you which checklist to follow for your specific scenario.
 
 ### Rules
-- ALWAYS start session with `get_scope` then `get_phase_playbook`
-- Use `save_hypothesis` to track attack ideas — update status as you test them
-- A finding is confirmed only with a reproducible PoC — use status=potential until then
-- Save raw request and response for every finding — this is your evidence base
-- Use `save_dead_end` when a technique fails — prevents re-exploration loops
+- ALWAYS execute the Session Start Sequence above before any other action
+- ALWAYS call `search_knowledge` at session start AND whenever you encounter a new attack surface or technique boundary
+- Use `save_hypothesis` to track attack ideas - update status as you test them
+- A finding is confirmed only with a reproducible PoC - use status=potential until then
+- Save raw request and response for every finding - this is your evidence base
+- Use `save_dead_end` when a technique fails - prevents re-exploration loops
 - Use `transition_phase` to move between methodology phases explicitly
 - No findings means incomplete coverage, not a clean target
 
@@ -126,7 +187,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "memorize_concept",
-                    "description": "Store a concept, text snippet, document, or finding into the RAG memory store for semantic search later.",
+                    "description": "Store a concept, technique, observation, or finding into the RAG knowledge base for semantic retrieval. Use category='technique' for attack techniques, 'mindset' for mental models, 'methodology' for process guides, or any engagement-specific category. Use domain='global' for knowledge that should be available across all engagements.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -141,7 +202,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "search_knowledge",
-                    "description": "Search the RAG memory store using semantic similarity (LanceDB vector search).",
+                    "description": "Search the knowledge base using semantic similarity. Contains pre-loaded security techniques (mindset, technique, methodology categories) plus engagement-specific memories. Call this BEFORE starting any analysis, writing PoC code, or approaching an unfamiliar attack surface - it surfaces relevant techniques and mental models automatically.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -610,7 +671,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "get_phase_playbook",
-                    "description": "Get current methodology phase, checklist, transition options, and auto-recalled lessons from past engagements. This is the 'brain' — call it to understand where you are and what to do next.",
+                    "description": "Get current methodology phase, checklist, transition options, and auto-recalled lessons from past engagements. This is the 'brain' - call it to understand where you are and what to do next.",
                     "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
                 },
                 {
@@ -726,6 +787,45 @@ pub fn tools_list_msg(id: &Value) -> Value {
                         "type": "object",
                         "properties": {
                             "domain": { "type": "string", "description": "Target domain to generate report for" }
+                        },
+                        "required": ["domain"]
+                    }
+                },
+                {
+                    "name": "spawn_agent",
+                    "description": "Register a sub-agent and get its ID. Use this before launching a sub-agent so you can track its work. Returns an ID and a ready-to-paste block to include in the sub-agent's prompt. Old finished agents are swept automatically - no manual cleanup needed.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain":    { "type": "string", "description": "Target domain this agent is working on" },
+                            "role":      { "type": "string", "description": "Short label for what this agent does, e.g. 'auth-mapper', 'git-history', 'recon'" },
+                            "objective": { "type": "string", "description": "One sentence: exactly what this agent should find or produce" }
+                        },
+                        "required": ["domain", "role", "objective"]
+                    }
+                },
+                {
+                    "name": "update_agent_status",
+                    "description": "Called by a sub-agent when it finishes (or fails). Also callable by the orchestrator to cancel a running agent. Include IDs of any hypotheses or findings the agent created.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "id":           { "type": "string", "description": "Agent ID from spawn_agent" },
+                            "status":       { "type": "string", "enum": ["active", "done", "failed", "cancelled"] },
+                            "summary":      { "type": "string", "description": "What the agent found or why it failed" },
+                            "artifact_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of hypotheses/findings created during this run" }
+                        },
+                        "required": ["id", "status"]
+                    }
+                },
+                {
+                    "name": "list_agents",
+                    "description": "Show agents for a domain. By default shows only active agents. Use all=true to see recently completed ones. Use this to check whether sub-agents are done before reading their results.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "domain": { "type": "string" },
+                            "all":    { "type": "boolean", "description": "Include completed agents (default: false, active only)" }
                         },
                         "required": ["domain"]
                     }
