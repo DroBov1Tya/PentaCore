@@ -57,16 +57,22 @@ Persistent context store for pentest sessions with methodology-driven workflow.
 
 ### Operational Cycle (OODA)
 Every action follows this loop:
-1. **Observe** - call `recall_engagement_state` to see current state
-2. **Orient** - call `get_phase_playbook` to understand the current phase, then `search_knowledge` to pull relevant attack techniques and mental models
-3. **Decide** - pick ONE technique, check `recall_similar_situations` for relevant lessons
-4. **Act** - execute via appropriate tool
-5. **Reflect** - call `record_lesson` with structured outcome; use `save_dead_end` if it failed
+1. Observe - call recall_engagement_state to see current state
+2. Orient - for the component or surface you are analyzing, do this BEFORE calling any tools:
+   - State out loud: 'This component assumes X about its input / caller / environment'
+   - For each assumption ask: is this ENFORCED in code, or just EXPECTED to be true?
+   - The gap between EXPECTED and ENFORCED is where bugs live
+   - Then call get_phase_playbook and search_knowledge to pull techniques relevant to those assumptions
+3. Decide - pick the assumption most likely to be wrong; check recall_similar_situations for prior cases where this assumption failed
+4. Act - test THAT specific assumption; know in advance what a vulnerable response looks like vs a safe one
+5. Reflect - call record_lesson with structured outcome; use save_dead_end if it failed
+
+Variant propagation rule: when you confirm a finding, immediately ask 'where else does the same root cause exist?' - the same developer wrote multiple components, the same assumption is likely wrong in more than one place. Save follow-up hypotheses before moving on.
 
 ### Knowledge Base (RAG) - USE THIS PROACTIVELY
 The knowledge base contains pre-loaded security research techniques, mental models, and methodologies. **You MUST query it before starting any non-trivial task.**
 
-**Mandatory triggers - call `search_knowledge` when you:**
+**Mandatory triggers - call 'search_knowledge' when you:**
 - Start analyzing an unknown service, protocol, or codebase
 - Are about to write a PoC or exploit
 - See an interesting pattern (e.g. length field, auth check, state transition, crypto usage)
@@ -75,70 +81,89 @@ The knowledge base contains pre-loaded security research techniques, mental mode
 - Want to understand how to approach binary/protocol research vs web testing
 
 **Pre-loaded categories:**
-- `mindset` - Mental models: attack surface decomposition, state machine confusion, differential analysis (patch diffing), taint analysis, STRIDE threat modeling, hypothesis-driven research, the 'what if attacker controls X' framework
-- `technique` - Specific attack techniques: auth logic bugs, JWT attacks, OAuth 2.0/OIDC exploitation, SSRF (cloud metadata, filter bypass, blind SSRF), HTTP request smuggling, web cache poisoning, GraphQL attacks, race conditions/TOCTOU, integer overflow, privilege escalation
-- `methodology` - Process guides: web whitebox/blackbox checklists, binary analysis, docker image auditing, infra/network pentesting, stack fingerprinting -> CVE -> exploit, patch diffing, code review for zero-days
-- `tools` - Tool reference and usage: recon tooling, web fuzzing, vulnerability scanning, network and AD tools, pivoting and C2, exposed services detection
+- 'mindset' - Mental models: attack surface decomposition, state machine confusion, differential analysis (patch diffing), taint analysis, STRIDE threat modeling, hypothesis-driven research, the 'what if attacker controls X' framework
+- 'technique' - Specific attack techniques: auth logic bugs, JWT, OAuth 2.0/OIDC, SAML/XSW, SSRF, request smuggling, cache poisoning, GraphQL, async pipeline races; API security (mass assignment, BOLA/BFLA, excessive data exposure, rate-limit bypass); business logic (workflow bypass, value manipulation, race-on-logic, coupon/quota abuse); mobile (Android/iOS, Frida, SSL pinning); cloud-native (Kubernetes RBAC, IAM privesc, container escape); binary exploitation (heap, ROP, format string)
+- 'methodology' - Process guides: web whitebox/blackbox checklists, binary analysis, docker image auditing, infra/network pentesting, stack fingerprinting -> CVE -> exploit, patch diffing, code review for zero-days
+- 'tools' - Tool reference and usage: recon tooling, web fuzzing, vulnerability scanning, network and AD tools, pivoting and C2, exposed services detection
 
-**IMPORTANT - domain parameter:**
-- To search the global knowledge base: **omit domain** or use `domain: \"global\"`
+domain parameter:
+- To search the global knowledge base: omit domain or pass domain: global
 - To search engagement-specific memories: pass the target domain
 - Mixing these loses global techniques - always query global KB separately first
 
-**Example queries that work well:**
-- `search_knowledge(query: \"how to find bugs in protocol length fields\", domain: \"global\")`
-- `search_knowledge(query: \"authentication bypass logic bugs\", domain: \"global\")`
-- `search_knowledge(query: \"first steps when analyzing unknown codebase\", domain: \"global\")`
-- `search_knowledge(query: \"integer overflow malloc\", domain: \"global\")`
-- `search_knowledge(query: \"race condition TOCTOU\", domain: \"global\")`
-- `search_knowledge(query: \"oauth jwt attack\", domain: \"global\")`
-- `search_knowledge(query: \"RBAC privilege escalation authorization bypass\", domain: \"global\")`
+Example queries that work well:
+- search_knowledge(query: how to find bugs in protocol length fields, domain: global)
+- search_knowledge(query: authentication bypass logic bugs, domain: global)
+- search_knowledge(query: first steps when analyzing unknown codebase, domain: global)
+- search_knowledge(query: integer overflow malloc, domain: global)
+- search_knowledge(query: race condition TOCTOU, domain: global)
+- search_knowledge(query: oauth jwt attack, domain: global)
+- search_knowledge(query: RBAC privilege escalation authorization bypass, domain: global)
 
-**To add your own knowledge:** use `memorize_concept(domain: \"global\", category: \"technique\"|\"mindset\"|\"methodology\", ...)` - it will be available to all future sessions.
+To add your own knowledge: use memorize_concept(domain: global, category: technique or mindset or methodology) - it will be available to all future sessions.
 
 ### Agent Orchestration
 When a task can be parallelized, spawn sub-agents instead of doing everything sequentially yourself.
 
-**Orchestrator role:** decompose -> assign -> evaluate results -> synthesize. Do NOT execute tasks yourself when an agent can do it.
+Orchestrator role: decompose -> assign -> evaluate results -> synthesize. Do NOT execute tasks yourself when an agent can do it.
 
-**Pattern:**
-1. `spawn_agent(domain, role, objective)` -> get agent ID
+Pattern:
+1. spawn_agent(domain, role, objective) -> get agent ID
 2. Launch the sub-agent with a narrow prompt that includes the ID
-3. Sub-agent: reads `recall_engagement_state()`, works, calls `update_agent_status(id, \"done\", summary, artifact_ids)`
-4. Orchestrator: `list_agents(domain)` to check completion, then `recall_engagement_state()` to read what they found
+3. Sub-agent: reads recall_engagement_state(), works, calls update_agent_status(id, done, summary, artifact_ids)
+4. Orchestrator: list_agents(domain) to check completion, then recall_engagement_state() to read what they found
 
-**Sub-agent prompt must include:**
-- The agent ID and instruction to call `update_agent_status` when done
-- Explicit scope + explicit \"do NOT\" boundary
-- `recall_engagement_state()` at start, `save_hypothesis()` / `save_dead_end()` during work
+Sub-agent prompt must include:
+- The agent ID and instruction to call update_agent_status when done
+- Explicit scope + explicit DO NOT boundary
+- recall_engagement_state() at start, save_hypothesis() and save_dead_end() during work
 
-**Sweep is automatic:** finished agents older than 1 hour are deleted on the next `spawn_agent` call. No cleanup needed.
+Finished agents older than 1 hour are deleted on the next spawn_agent call. No cleanup needed.
 
 ### Session Start Sequence (mandatory, in this order)
-Every new engagement begins with these four calls - no exceptions:
-1. `search_knowledge(query: \"where to start engagement router checklist scenario\", domain: \"global\", limit: 1)` - fetches the scenario router that maps what you have (web/binary/docker/infra/source) to the exact step-by-step checklist
-2. `get_scope(domain)` - load rules and objective for this target
-3. `get_phase_playbook(domain)` - understand current methodology phase and what to do next
-4. `search_knowledge(query: \"<describe attack surface>\", domain: \"global\")` - pull relevant techniques and mental models
+Every new engagement begins with three calls - no exceptions:
+1. get_scope(domain) - load rules and objective for this target
+2. get_phase_playbook(domain) - understand current methodology phase and what to do next
+3. search_knowledge with the query from the routing table below - pull the step-by-step checklist for your scenario
 
-Do not skip or reorder these steps. The router in step 1 tells you which checklist to follow for your specific scenario.
+Routing table - pick the query that matches what you have:
+
+| Scenario | Query to pass to search_knowledge |
+|----------|------------------------------------|
+| Web app, no source code | blackbox web no source crawl surface map IDOR role matrix business logic |
+| Web app + source code | git history auth flow grep sinks taint analysis source code review |
+| Source code only, no live system | static analysis grep secrets sinks code audit no live app |
+| Binary / executable | checksec heap overflow rop format string memory corruption pwntools |
+| Mobile app (APK / IPA) | mobile android ios apk frida ssl pinning decompile exported component deeplink |
+| Kubernetes / cloud / containers | kubernetes service account iam container escape imds privilege escalation cloud |
+| Docker image / container | trivy container image layers secrets escape entrypoint |
+| Corporate network / infra | active directory lateral movement nmap smb kerberos spray |
+
+Run a second search after the checklist if your target spans areas - e.g. a mobile app also needs the API tested (use the web query too).
+
+Almost every web/mobile/API target ALSO needs these two - search them after the scenario checklist:
+- API testing: search 'API mass assignment BOLA BFLA excessive data exposure rate limit bypass versioning'
+- Business logic (highest-value, scanner-blind): search 'business logic workflow bypass value manipulation race coupon quota replay'
+
+Do not search for 'where to start' or 'checklist' - those queries find the routing table itself, not the checklists.
 
 ### Rules
 - ALWAYS execute the Session Start Sequence above before any other action
-- ALWAYS call `search_knowledge` at session start AND whenever you encounter a new attack surface or technique boundary
-- Use `save_hypothesis` to track attack ideas - update status as you test them
+- If get_scope returns \"Scope not found\": call save_scope(domain, objective, in_scope) immediately, then continue the sequence
+- ALWAYS call 'search_knowledge' at session start AND whenever you encounter a new attack surface or technique boundary
+- Use 'save_hypothesis' to track attack ideas - update status as you test them
 - A finding is confirmed only with a reproducible PoC - use status=potential until then
 - Save raw request and response for every finding - this is your evidence base
-- Use `save_dead_end` when a technique fails - prevents re-exploration loops
-- Use `transition_phase` to move between methodology phases explicitly
+- Use 'save_dead_end' when a technique fails - prevents re-exploration loops
+- Use 'transition_phase' to move between methodology phases explicitly
 - No findings means incomplete coverage, not a clean target
 
 ### Networking & Sessions
-- Use `set_session` to globally configure authentication tokens and cookies.
-- Use `make_request` to execute HTTP calls automatically using the global session.
-  - If you omit `user_agent`, it will be randomized on every request.
-- Use `revoke_session` if you encounter 401/403 errors and need to clear stale context.
-- Use `make_race_requests` to send parallel requests to test for Race Conditions.", server_path.split(':').last().unwrap_or("8082"))
+- Use 'set_session' to globally configure authentication tokens and cookies.
+- Use 'make_request' to execute HTTP calls automatically using the global session.
+  - If you omit 'user_agent', it will be randomized on every request.
+- Use 'revoke_session' if you encounter 401/403 errors and need to clear stale context.
+- Use 'make_race_requests' to send parallel requests to test for Race Conditions.", server_path.split(':').last().unwrap_or("8082"))
             }]
         }
     })
@@ -157,12 +182,16 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "save_scope",
-                    "description": "Save or update engagement rules.",
+                    "description": "Save or update engagement rules. Always include domain_type so recalled lessons from other engagement types don't pollute your playbook.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "domain": { "type": "string" }, "objective": { "type": "string" },
-                            "in_scope": { "type": "string" }, "out_of_scope": { "type": "string" }, "rules": { "type": "string" }
+                            "domain": { "type": "string" },
+                            "objective": { "type": "string" },
+                            "in_scope": { "type": "string" },
+                            "out_of_scope": { "type": "string" },
+                            "rules": { "type": "string" },
+                            "domain_type": { "type": "string", "enum": ["web","binary","cloud","infra","mobile"], "description": "Type of engagement - filters recalled lessons to only show relevant past experience" }
                         },
                         "required": ["domain", "objective", "in_scope"]
                     }
@@ -727,33 +756,35 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "save_dead_end",
-                    "description": "Record a technique that was tried and failed. Prevents re-exploration loops.",
+                    "description": "Record a technique that was tried and ruled out. Prevents re-exploration loops. IMPORTANT: include assumption_tested and expected_if_vulnerable so future agents know the test was done correctly, not just abandoned.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "domain": { "type": "string" },
                             "technique": { "type": "string", "description": "What was tried" },
                             "target_info": { "type": "string", "description": "Against what (endpoint, service, etc.)" },
-                            "reason": { "type": "string", "description": "Why it failed" }
+                            "assumption_tested": { "type": "string", "description": "What security assumption were you testing? e.g. 'the aud claim is validated by transfer-service'" },
+                            "expected_if_vulnerable": { "type": "string", "description": "What response/behavior would have confirmed the assumption is wrong? e.g. '200 OK with transfer executed instead of 401'" },
+                            "reason": { "type": "string", "description": "What actually happened and why this rules out the assumption" }
                         },
                         "required": ["domain", "technique", "reason"]
                     }
                 },
                 {
                     "name": "recall_engagement_state",
-                    "description": "Get a filtered view of the engagement. Lens options: 'progress' (stats + phase), 'hosts' (subdomains + infra), 'creds' (credentials), 'open_hypotheses', 'dead_ends', 'attack_surface' (untested endpoints + pending vectors).",
+                    "description": "Get a filtered view of the engagement. Lens options: progress (stats + phase), hosts (subdomains + infra), creds (credentials), open_hypotheses, dead_ends, attack_surface (untested endpoints + pending vectors), technique_gaps (which vulnerability categories have not been tested at all).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "domain": { "type": "string" },
-                            "lens": { "type": "string", "enum": ["progress","hosts","creds","open_hypotheses","dead_ends","attack_surface"] }
+                            "lens": { "type": "string", "enum": ["progress","hosts","creds","open_hypotheses","dead_ends","attack_surface","technique_gaps"] }
                         },
                         "required": ["domain", "lens"]
                     }
                 },
                 {
                     "name": "record_lesson",
-                    "description": "Record a structured lesson from this engagement into episodic memory. Will be auto-recalled in future similar situations.",
+                    "description": "Record a structured lesson from this engagement into episodic memory. Will be auto-recalled in future similar situations. Include domain_type so lessons only surface when context matches.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -763,19 +794,21 @@ pub fn tools_list_msg(id: &Value) -> Value {
                             "action_taken": { "type": "string", "description": "What was done" },
                             "outcome": { "type": "string", "description": "What happened" },
                             "lesson": { "type": "string", "description": "Generalized takeaway" },
-                            "tags": { "type": "array", "items": { "type": "string" } }
+                            "tags": { "type": "array", "items": { "type": "string" } },
+                            "domain_type": { "type": "string", "enum": ["web","binary","cloud","infra","mobile"], "description": "Type of engagement - used to filter lessons so cloud lessons don't surface in web searches and vice versa" }
                         },
                         "required": ["domain", "trigger_pattern", "lesson"]
                     }
                 },
                 {
                     "name": "recall_similar_situations",
-                    "description": "Search episodic memory for lessons from past engagements matching a situation description.",
+                    "description": "Search episodic memory for lessons from past engagements matching a situation description. Pass domain_type to avoid cross-domain noise.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "situation": { "type": "string", "description": "Describe what you're seeing now" },
-                            "limit": { "type": "integer", "description": "Max results (default 5)" }
+                            "limit": { "type": "integer", "description": "Max results (default 5)" },
+                            "domain_type": { "type": "string", "enum": ["web","binary","cloud","infra","mobile"], "description": "Filter to lessons from the same type of engagement" }
                         },
                         "required": ["situation"]
                     }

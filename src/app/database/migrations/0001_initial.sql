@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS scopes (
     in_scope     TEXT NOT NULL,
     out_of_scope TEXT,
     rules        TEXT,
+    domain_type  TEXT,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

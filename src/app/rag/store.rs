@@ -146,6 +146,18 @@ impl MemoryStore {
         domain_filter: Option<&str>,
         limit: usize,
     ) -> Result<SearchResult> {
+        self.search_by_category_tagged(query, category, domain_filter, None, limit)
+            .await
+    }
+
+    pub async fn search_by_category_tagged(
+        &mut self,
+        query: &str,
+        category: &str,
+        domain_filter: Option<&str>,
+        tag_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<SearchResult> {
         let table = self.get_or_create_table().await?;
         if table.count_rows(None).await? == 0 {
             return Ok(SearchResult {
@@ -158,10 +170,14 @@ impl MemoryStore {
         let query_vector = self.get_embedder()?.embed(query)?;
         let total_memories = table.count_rows(None).await? as i64;
 
-        let filter = if let Some(d) = domain_filter {
+        let mut filter = if let Some(d) = domain_filter {
             format!("category = '{}' AND domain = '{}'", category, d)
         } else {
             format!("category = '{}'", category)
+        };
+        // Tag filter: lessons tagged domain_type:web won't surface in binary/cloud searches
+        if let Some(tag) = tag_filter {
+            filter = format!("{} AND tags LIKE '%{}%'", filter, tag);
         };
 
         let batches: Vec<RecordBatch> = table
@@ -216,10 +232,10 @@ impl MemoryStore {
                     .map(|arr| arr.value(i) as f64);
 
                 if let Some(d) = dist {
-                    // AllMiniLML6V2 without explicit normalization produces distances in ~1.4–1.7
-                    // range even for semantically close matches. Threshold 1.7 passes relevant
-                    // results while filtering near-orthogonal noise (d > 1.8+).
-                    if d > 1.7 {
+                    // AllMiniLML6V2 produces distances in ~1.4-1.7 for semantically close matches.
+                    // 1.65 keeps strong matches while filtering cross-domain noise (redis RCE
+                    // bleeding into web app queries was observed at d=1.62 with threshold 1.7).
+                    if d > 1.65 {
                         continue;
                     }
                 }

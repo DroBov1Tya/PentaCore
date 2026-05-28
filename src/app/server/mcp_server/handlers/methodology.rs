@@ -9,29 +9,46 @@ pub async fn handle_get_phase_playbook(args: &Value, state: &Arc<AppState>) -> S
         return "Error: domain is required".to_string();
     }
 
+    // Fetch domain_type from scope so recalled lessons only surface from matching engagements
+    let scope_domain_type: Option<String> = sqlx::query_scalar(
+        "SELECT s.domain_type FROM scopes s JOIN targets t ON t.id = s.target_id WHERE t.domain = ? ORDER BY s.created_at DESC LIMIT 1"
+    )
+    .bind(domain)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None)
+    .flatten();
+
     match playbook::get_playbook(&state.db, domain).await {
         Ok(mut pb) => {
-            let situation = format!(
-                "{} phase pentest on {} — {} open hypotheses, {} dead ends",
-                pb.current_phase, domain, pb.open_hypotheses_count, pb.dead_ends_count
-            );
-            let mut store = state.memory_store.lock().await;
-            if let Ok(lessons) = store
-                .search_by_category(&situation, "lesson", None, 3)
-                .await
-            {
-                pb.recalled_lessons = lessons
-                    .results
-                    .into_iter()
-                    .map(|note| {
-                        serde_json::json!({
-                            "title": note.title,
-                            "content": note.content,
-                            "similarity": note.score,
-                            "warning": "Auto-recalled from past experience. Verify applicability."
+            let has_context = pb.open_hypotheses_count > 0 || pb.dead_ends_count > 0;
+            if has_context {
+                let situation = format!(
+                    "{} phase pentest on {}, {} open hypotheses, {} dead ends",
+                    pb.current_phase, domain, pb.open_hypotheses_count, pb.dead_ends_count
+                );
+                let tag_str: Option<String> = scope_domain_type
+                    .as_ref()
+                    .map(|dt| format!("domain_type:{}", dt));
+                let tag_filter: Option<&str> = tag_str.as_deref();
+                let mut store = state.memory_store.lock().await;
+                if let Ok(lessons) = store
+                    .search_by_category_tagged(&situation, "lesson", None, tag_filter, 3)
+                    .await
+                {
+                    pb.recalled_lessons = lessons
+                        .results
+                        .into_iter()
+                        .map(|note| {
+                            serde_json::json!({
+                                "title": note.title,
+                                "content": note.content,
+                                "similarity": note.score,
+                                "warning": "Auto-recalled from past experience. Verify applicability."
+                            })
                         })
-                    })
-                    .collect();
+                        .collect();
+                }
             }
             serde_json::to_string_pretty(&pb).unwrap_or_default()
         }
@@ -74,7 +91,18 @@ pub async fn handle_save_hypothesis(args: &Value, state: &Arc<AppState>) -> Stri
         }
     };
     match methodology::save_hypothesis(&state.db, target_id, hypothesis, source).await {
-        Ok(id) => format!("Hypothesis saved. ID: {}", id),
+        Ok(id) => {
+            // Nudge toward specificity without blocking. A vague hypothesis is saved
+            // but the agent gets a hint so future agents have something actionable to work with.
+            let hint = if hypothesis.len() < 60
+                || !hypothesis.chars().any(|c| c == '/' || c == '.' || c == '(')
+            {
+                "\nHint: consider adding the specific endpoint, what you observed, and what a vulnerable response would look like."
+            } else {
+                ""
+            };
+            format!("Hypothesis saved. ID: {}{}", id, hint)
+        }
         Err(e) => format!("Error: {}", e),
     }
 }
@@ -117,10 +145,33 @@ pub async fn handle_save_dead_end(args: &Value, state: &Arc<AppState>) -> String
     let domain = args["domain"].as_str().unwrap_or("");
     let technique = args["technique"].as_str().unwrap_or("");
     let target_info = args["target_info"].as_str();
-    let reason = args["reason"].as_str().unwrap_or("");
-    if domain.is_empty() || technique.is_empty() || reason.is_empty() {
+    let assumption = args["assumption_tested"].as_str().unwrap_or("");
+    let expected = args["expected_if_vulnerable"].as_str().unwrap_or("");
+    let base_reason = args["reason"].as_str().unwrap_or("");
+    if domain.is_empty() || technique.is_empty() || base_reason.is_empty() {
         return "Error: domain, technique, and reason are required".to_string();
     }
+    // Enrich the reason with assumption context so future agents see the full picture
+    let reason_owned;
+    let reason = if !assumption.is_empty() || !expected.is_empty() {
+        reason_owned = format!(
+            "{}\nASSUMPTION TESTED: {}\nEXPECTED IF VULNERABLE: {}",
+            base_reason,
+            if assumption.is_empty() {
+                "not specified"
+            } else {
+                assumption
+            },
+            if expected.is_empty() {
+                "not specified"
+            } else {
+                expected
+            }
+        );
+        reason_owned.as_str()
+    } else {
+        base_reason
+    };
     let target_id: Option<i64> = sqlx::query_scalar("SELECT id FROM targets WHERE domain = ?")
         .bind(domain)
         .fetch_optional(&state.db)
@@ -158,7 +209,7 @@ pub async fn handle_record_lesson(args: &Value, state: &Arc<AppState>) -> String
     if domain.is_empty() || trigger_pattern.is_empty() || lesson.is_empty() {
         return "Error: domain, trigger_pattern, and lesson are required".to_string();
     }
-    let tags = args["tags"]
+    let mut tags = args["tags"]
         .as_array()
         .map(|v| {
             v.iter()
@@ -166,7 +217,14 @@ pub async fn handle_record_lesson(args: &Value, state: &Arc<AppState>) -> String
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let title = format!("{} → {}", trigger_pattern, outcome);
+    // Store domain_type as a tag so recall_similar_situations can filter cross-domain noise
+    if let Some(dt) = args["domain_type"].as_str() {
+        let valid = ["web", "binary", "cloud", "infra", "mobile"];
+        if valid.contains(&dt) {
+            tags.push(format!("domain_type:{}", dt));
+        }
+    }
+    let title = format!("{} -> {}", trigger_pattern, outcome);
     let content = format!(
         "TRIGGER: {}\nHYPOTHESIS: {}\nACTION: {}\nOUTCOME: {}\nLESSON: {}",
         trigger_pattern, hypothesis, action_taken, outcome, lesson
@@ -184,12 +242,16 @@ pub async fn handle_record_lesson(args: &Value, state: &Arc<AppState>) -> String
 pub async fn handle_recall_similar_situations(args: &Value, state: &Arc<AppState>) -> String {
     let situation = args["situation"].as_str().unwrap_or("");
     let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+    let domain_type = args["domain_type"].as_str();
     if situation.is_empty() {
         return "Error: situation is required".to_string();
     }
     let mut store = state.memory_store.lock().await;
+    // If domain_type is provided, filter to matching lessons to avoid cross-domain noise
+    let tag_str: Option<String> = domain_type.map(|dt| format!("domain_type:{}", dt));
+    let tag_filter: Option<&str> = tag_str.as_deref();
     match store
-        .search_by_category(situation, "lesson", None, limit)
+        .search_by_category_tagged(situation, "lesson", None, tag_filter, limit)
         .await
     {
         Ok(res) => serde_json::to_string_pretty(&res).unwrap_or_default(),

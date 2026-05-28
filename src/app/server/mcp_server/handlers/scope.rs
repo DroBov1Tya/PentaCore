@@ -19,6 +19,7 @@ pub async fn handle_save_scope(args: &Value, state: &Arc<AppState>) -> String {
         in_scope: args["in_scope"].as_str().unwrap_or("").to_string(),
         out_of_scope: args["out_of_scope"].as_str().map(String::from),
         rules: args["rules"].as_str().map(String::from),
+        domain_type: args["domain_type"].as_str().map(String::from),
     };
     match scope::upsert(&state.db, domain, &input).await {
         Ok(id) => format!("Scope saved. ID: {}", id),

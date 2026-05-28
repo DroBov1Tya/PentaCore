@@ -11,8 +11,7 @@ use super::store::MemoryStore;
 /// so seeding is fully idempotent even after SQLite is cleared.
 /// Bytes spell out "pentacore_seeds\0".
 const SEED_NS: Uuid = Uuid::from_bytes([
-    b'p', b'e', b'n', b't', b'a', b'c', b'o', b'r',
-    b'e', b'_', b's', b'e', b'e', b'd', b's', 0u8,
+    b'p', b'e', b'n', b't', b'a', b'c', b'o', b'r', b'e', b'_', b's', b'e', b'e', b'd', b's', 0u8,
 ]);
 
 fn seed_id(source_key: &str) -> String {

@@ -91,8 +91,9 @@ pub async fn recall(db: &SqlitePool, domain: &str, lens: &str) -> sqlx::Result<E
         "open_hypotheses" => recall_open_hypotheses(db, target_id).await?,
         "dead_ends" => recall_dead_ends(db, target_id).await?,
         "attack_surface" => recall_attack_surface(db, target_id).await?,
+        "technique_gaps" => recall_technique_gaps(db, target_id).await?,
         _ => serde_json::json!({
-            "error": "Unknown lens. Valid: progress, hosts, creds, open_hypotheses, dead_ends, attack_surface"
+            "error": "Unknown lens. Valid: progress, hosts, creds, open_hypotheses, dead_ends, attack_surface, technique_gaps"
         }),
     };
 
@@ -241,6 +242,71 @@ async fn recall_open_hypotheses(
 async fn recall_dead_ends(db: &SqlitePool, target_id: i64) -> sqlx::Result<serde_json::Value> {
     let ends = methodology::get_dead_ends(db, target_id).await?;
     Ok(serde_json::to_value(ends).unwrap_or_default())
+}
+
+async fn recall_technique_gaps(db: &SqlitePool, target_id: i64) -> sqlx::Result<serde_json::Value> {
+    // All standard vulnerability vectors from the coverage enum
+    let all_vectors = [
+        "sqli", "xss", "ssrf", "csrf", "idor", "bola", "rce", "lfi", "xxe", "ssti", "auth", "cors",
+        "graphql", "race",
+    ];
+
+    // Vectors that have at least one coverage entry for this target (formally tracked)
+    let tracked_rows: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT c.vector FROM coverage c JOIN endpoints e ON e.id = c.endpoint_id WHERE e.target_id = ?"
+    )
+    .bind(target_id)
+    .fetch_all(db)
+    .await?;
+
+    // Techniques mentioned in dead ends (informally tracked)
+    let dead_end_rows: Vec<String> =
+        sqlx::query_scalar("SELECT LOWER(technique) FROM dead_ends WHERE target_id = ?")
+            .bind(target_id)
+            .fetch_all(db)
+            .await?;
+    let dead_ends_text = dead_end_rows.join(" ");
+
+    // Techniques mentioned in findings
+    let finding_rows: Vec<String> =
+        sqlx::query_scalar("SELECT LOWER(type) FROM findings WHERE target_id = ?")
+            .bind(target_id)
+            .fetch_all(db)
+            .await?;
+    let findings_text = finding_rows.join(" ");
+
+    let mut touched: Vec<&str> = tracked_rows.iter().map(|s| s.as_str()).collect();
+    let mut gaps: Vec<&str> = Vec::new();
+
+    for vector in all_vectors {
+        let in_coverage = tracked_rows.iter().any(|t| t == vector);
+        let in_dead_ends = dead_ends_text.contains(vector);
+        let in_findings = findings_text.contains(vector);
+        if in_coverage || in_dead_ends || in_findings {
+            if !touched.contains(&vector) {
+                touched.push(vector);
+            }
+        } else {
+            gaps.push(vector);
+        }
+    }
+
+    let total_endpoints: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM endpoints WHERE target_id = ?")
+            .bind(target_id)
+            .fetch_one(db)
+            .await?;
+
+    Ok(serde_json::json!({
+        "touched_categories": touched,
+        "not_yet_tested": gaps,
+        "total_endpoints": total_endpoints,
+        "hint": if gaps.is_empty() {
+            "All standard technique categories have been addressed."
+        } else {
+            "These categories have no coverage entries, dead ends, or findings - they have not been looked at."
+        }
+    }))
 }
 
 async fn recall_attack_surface(db: &SqlitePool, target_id: i64) -> sqlx::Result<serde_json::Value> {

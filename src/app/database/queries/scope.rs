@@ -18,6 +18,7 @@ pub struct CreateScope {
     pub in_scope: String,
     pub out_of_scope: Option<String>,
     pub rules: Option<String>,
+    pub domain_type: Option<String>,
 }
 
 pub async fn get(db: &SqlitePool, domain: &str) -> sqlx::Result<Option<ScopeRow>> {
@@ -54,14 +55,15 @@ pub async fn upsert(db: &SqlitePool, domain: &str, input: &CreateScope) -> sqlx:
 
     let result = sqlx::query(
         r#"
-        INSERT INTO scopes (target_id, objective, in_scope, out_of_scope, rules)
-        SELECT id, ?, ?, ?, ? FROM targets WHERE domain = ?
+        INSERT INTO scopes (target_id, objective, in_scope, out_of_scope, rules, domain_type)
+        SELECT id, ?, ?, ?, ?, ? FROM targets WHERE domain = ?
     "#,
     )
     .bind(&input.objective)
     .bind(&input.in_scope)
     .bind(&input.out_of_scope)
     .bind(&input.rules)
+    .bind(&input.domain_type)
     .bind(domain)
     .execute(db)
     .await?;

