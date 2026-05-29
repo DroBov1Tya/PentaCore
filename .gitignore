@@ -11,3 +11,4 @@ Cargo.lock
 
 /bin/*
 !/bin/.env.example
+/.fastembed_cache
