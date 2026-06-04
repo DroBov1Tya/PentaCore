@@ -234,7 +234,7 @@ impl ToolRegistry {
         );
 
         // Agent orchestration
-        r.register("spawn_agent", h!(handlers::agents::handle_spawn_agent));
+        r.register("track_agent", h!(handlers::agents::handle_spawn_agent));
         r.register(
             "update_agent_status",
             h!(handlers::agents::handle_update_agent_status),

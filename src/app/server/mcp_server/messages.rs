@@ -22,7 +22,8 @@ pub fn initialize_msg(id: &Value, requested_version: &str) -> Value {
             "serverInfo": {
                 "name": "PentaCore-mcp-stdio",
                 "version": crate::constants::VERSION
-            }
+            },
+            "instructions": "Read `pentest://instructions` at session start.\n\nThen always run in order:\n1. `get_scope(domain)`\n2. `get_phase_playbook(domain)`\n3. `search_knowledge(<scenario_query>, domain: \"global\")`\n\nIf `get_scope` returns not found: call `save_scope` first."
         }
     })
 }
@@ -51,119 +52,54 @@ pub fn resources_read_msg(id: &Value, server_path: &str) -> Value {
             "contents": [{
                 "uri": "pentest://instructions",
                 "mimeType": "text/markdown",
-                "text": format!("## PentaCore MCP
-Persistent context store for pentest sessions with methodology-driven workflow.
-**NOTE TO AI:** You can use this MCP server OR you can make standard HTTP REST requests to localhost:{} if you find it more convenient. Both methods work and modify the same database.
+                "text": format!("## PentaCore MCP — Security Research Memory Server
+REST API also available at localhost:{} (same DB).
 
-### Operational Cycle (OODA)
-Every action follows this loop:
-1. Observe - call recall_engagement_state to see current state
-2. Orient - for the component or surface you are analyzing, do this BEFORE calling any tools:
-   - State out loud: 'This component assumes X about its input / caller / environment'
-   - For each assumption ask: is this ENFORCED in code, or just EXPECTED to be true?
-   - The gap between EXPECTED and ENFORCED is where bugs live
-   - Then call get_phase_playbook and search_knowledge to pull techniques relevant to those assumptions
-3. Decide - pick the assumption most likely to be wrong; check recall_similar_situations for prior cases where this assumption failed
-4. Act - test THAT specific assumption; know in advance what a vulnerable response looks like vs a safe one
-5. Reflect - call record_lesson with structured outcome; use save_dead_end if it failed
+### OODA Loop
+1. **Observe** — `recall_engagement_state(domain, lens)`
+2. **Orient** — `search_knowledge` for techniques; state assumptions (EXPECTED vs ENFORCED)
+3. **Decide** — pick assumption most likely wrong; check `recall_similar_situations`
+4. **Act** — test it; know what vulnerable vs safe looks like in advance
+5. **Reflect** — `record_lesson`; `save_dead_end` if ruled out
 
-Variant propagation rule: when you confirm a finding, immediately ask 'where else does the same root cause exist?' - the same developer wrote multiple components, the same assumption is likely wrong in more than one place. Save follow-up hypotheses before moving on.
+When you confirm a finding: ask 'where else does the same root cause exist?' Save follow-up hypotheses.
 
-### Knowledge Base (RAG) - USE THIS PROACTIVELY
-The knowledge base contains pre-loaded security research techniques, mental models, and methodologies. **You MUST query it before starting any non-trivial task.**
+### Knowledge Base
+Query BEFORE starting analysis. Categories: mindset, technique (auth/JWT/OAuth/SSRF/IDOR/race/GraphQL/cloud/mobile/binary), methodology, tools.
 
-**Mandatory triggers - call 'search_knowledge' when you:**
-- Start analyzing an unknown service, protocol, or codebase
-- Are about to write a PoC or exploit
-- See an interesting pattern (e.g. length field, auth check, state transition, crypto usage)
-- Don't know where to start on a target
-- Need a checklist for a vulnerability class
-- Want to understand how to approach binary/protocol research vs web testing
+domain: pass target domain for engagement-specific, omit or `global` for shared KB.
 
-**Pre-loaded categories:**
-- 'mindset' - Mental models: attack surface decomposition, state machine confusion, differential analysis (patch diffing), taint analysis, STRIDE threat modeling, hypothesis-driven research, the 'what if attacker controls X' framework
-- 'technique' - Specific attack techniques: auth logic bugs, JWT, OAuth 2.0/OIDC, SAML/XSW, SSRF, request smuggling, cache poisoning, GraphQL, async pipeline races; API security (mass assignment, BOLA/BFLA, excessive data exposure, rate-limit bypass); business logic (workflow bypass, value manipulation, race-on-logic, coupon/quota abuse); mobile (Android/iOS, Frida, SSL pinning); cloud-native (Kubernetes RBAC, IAM privesc, container escape); binary exploitation (heap, ROP, format string)
-- 'methodology' - Process guides: web whitebox/blackbox checklists, binary analysis, docker image auditing, infra/network pentesting, stack fingerprinting -> CVE -> exploit, patch diffing, code review for zero-days
-- 'tools' - Tool reference and usage: recon tooling, web fuzzing, vulnerability scanning, network and AD tools, pivoting and C2, exposed services detection
+Routing table:
+| Target | search_knowledge query |
+|--------|----------------------|
+| Web (no source) | web surface mapping IDOR role matrix business logic |
+| Web + source | git history auth flow taint analysis sinks |
+| Source only | static analysis grep secrets sinks code audit |
+| Binary | memory safety buffer integer overflow control flow |
+| Mobile APK/IPA | android ios dynamic instrumentation ssl pinning deeplink |
+| Kubernetes/cloud | rbac iam privilege container isolation imds |
+| Docker image | container layers secrets entrypoint |
+| Network/AD | active directory smb kerberos lateral movement |
 
-domain parameter:
-- To search the global knowledge base: omit domain or pass domain: global
-- To search engagement-specific memories: pass the target domain
-- Mixing these loses global techniques - always query global KB separately first
+Extra searches for web/API: `API mass assignment BOLA BFLA rate limit` and `business logic workflow race coupon quota`.
 
-Example queries that work well:
-- search_knowledge(query: how to find bugs in protocol length fields, domain: global)
-- search_knowledge(query: authentication bypass logic bugs, domain: global)
-- search_knowledge(query: first steps when analyzing unknown codebase, domain: global)
-- search_knowledge(query: integer overflow malloc, domain: global)
-- search_knowledge(query: race condition TOCTOU, domain: global)
-- search_knowledge(query: oauth jwt attack, domain: global)
-- search_knowledge(query: RBAC privilege escalation authorization bypass, domain: global)
-
-To add your own knowledge: use memorize_concept(domain: global, category: technique or mindset or methodology) - it will be available to all future sessions.
-
-### Agent Orchestration
-When a task can be parallelized, spawn sub-agents instead of doing everything sequentially yourself.
-
-Orchestrator role: decompose -> assign -> evaluate results -> synthesize. Do NOT execute tasks yourself when an agent can do it.
-
-Pattern:
-1. spawn_agent(domain, role, objective) -> get agent ID
-2. Launch the sub-agent with a narrow prompt that includes the ID
-3. Sub-agent: reads recall_engagement_state(), works, calls update_agent_status(id, done, summary, artifact_ids)
-4. Orchestrator: list_agents(domain) to check completion, then recall_engagement_state() to read what they found
-
-Sub-agent prompt must include:
-- The agent ID and instruction to call update_agent_status when done
-- Explicit scope + explicit DO NOT boundary
-- recall_engagement_state() at start, save_hypothesis() and save_dead_end() during work
-
-Finished agents older than 1 hour are deleted on the next spawn_agent call. No cleanup needed.
-
-### Session Start Sequence (mandatory, in this order)
-Every new engagement begins with three calls - no exceptions:
-1. get_scope(domain) - load rules and objective for this target
-2. get_phase_playbook(domain) - understand current methodology phase and what to do next
-3. search_knowledge with the query from the routing table below - pull the step-by-step checklist for your scenario
-
-Routing table - pick the query that matches what you have:
-
-| Scenario | Query to pass to search_knowledge |
-|----------|------------------------------------|
-| Web app, no source code | blackbox web no source crawl surface map IDOR role matrix business logic |
-| Web app + source code | git history auth flow grep sinks taint analysis source code review |
-| Source code only, no live system | static analysis grep secrets sinks code audit no live app |
-| Binary / executable | checksec heap overflow rop format string memory corruption pwntools |
-| Mobile app (APK / IPA) | mobile android ios apk frida ssl pinning decompile exported component deeplink |
-| Kubernetes / cloud / containers | kubernetes service account iam container escape imds privilege escalation cloud |
-| Docker image / container | trivy container image layers secrets escape entrypoint |
-| Corporate network / infra | active directory lateral movement nmap smb kerberos spray |
-
-Run a second search after the checklist if your target spans areas - e.g. a mobile app also needs the API tested (use the web query too).
-
-Almost every web/mobile/API target ALSO needs these two - search them after the scenario checklist:
-- API testing: search 'API mass assignment BOLA BFLA excessive data exposure rate limit bypass versioning'
-- Business logic (highest-value, scanner-blind): search 'business logic workflow bypass value manipulation race coupon quota replay'
-
-Do not search for 'where to start' or 'checklist' - those queries find the routing table itself, not the checklists.
+Add knowledge: `memorize_concept(domain: global, category: technique|mindset|methodology)`.
 
 ### Rules
-- ALWAYS execute the Session Start Sequence above before any other action
-- If get_scope returns \"Scope not found\": call save_scope(domain, objective, in_scope) immediately, then continue the sequence
-- ALWAYS call 'search_knowledge' at session start AND whenever you encounter a new attack surface or technique boundary
-- Use 'save_hypothesis' to track attack ideas - update status as you test them
-- A finding is confirmed only with a reproducible PoC - use status=potential until then
-- Save raw request and response for every finding - this is your evidence base
-- Use 'save_dead_end' when a technique fails - prevents re-exploration loops
-- Use 'transition_phase' to move between methodology phases explicitly
-- No findings means incomplete coverage, not a clean target
+- Session start: get_scope → get_phase_playbook → search_knowledge
+- `save_scope` first if get_scope returns not found
+- status=potential until reproducible evidence; then update_finding to confirmed
+- save_dead_end when a technique fails — prevents re-testing
+- save raw request+response for every finding
 
-### Networking & Sessions
-- Use 'set_session' to globally configure authentication tokens and cookies.
-- Use 'make_request' to execute HTTP calls automatically using the global session.
-  - If you omit 'user_agent', it will be randomized on every request.
-- Use 'revoke_session' if you encounter 401/403 errors and need to clear stale context.
-- Use 'make_race_requests' to send parallel requests to test for Race Conditions.", server_path.split(':').last().unwrap_or("8082"))
+### Agents
+track_agent → launch sub-agent with ID → sub-agent calls update_agent_status when done → orchestrator reads list_agents + recall_engagement_state.
+
+### HTTP Client
+- set_session: global cookies/auth for make_request
+- make_request: omit user_agent to randomize
+- revoke_session on 401/403
+- make_race_requests for concurrency/TOCTOU testing", server_path.split(':').last().unwrap_or("8082"))
             }]
         }
     })
@@ -182,7 +118,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "save_scope",
-                    "description": "Save or update engagement rules. Always include domain_type so recalled lessons from other engagement types don't pollute your playbook.",
+                    "description": "Save or update engagement scope and rules. Include domain_type to filter recalled lessons by engagement type.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -216,7 +152,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "memorize_concept",
-                    "description": "Store a concept, technique, observation, or finding into the RAG knowledge base for semantic retrieval. Use category='technique' for attack techniques, 'mindset' for mental models, 'methodology' for process guides, or any engagement-specific category. Use domain='global' for knowledge that should be available across all engagements.",
+                    "description": "Store a concept into the RAG knowledge base. category: technique|mindset|methodology. domain='global' for cross-engagement knowledge.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -231,7 +167,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "search_knowledge",
-                    "description": "Search the knowledge base using semantic similarity. Contains pre-loaded security techniques (mindset, technique, methodology categories) plus engagement-specific memories. Call this BEFORE starting any analysis, writing PoC code, or approaching an unfamiliar attack surface - it surfaces relevant techniques and mental models automatically.",
+                    "description": "Semantic search over the knowledge base (techniques, mindset, methodology) and engagement memories. Call before analysis or approaching unfamiliar surfaces.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -700,7 +636,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "get_phase_playbook",
-                    "description": "Get current methodology phase, checklist, transition options, and auto-recalled lessons from past engagements. This is the 'brain' - call it to understand where you are and what to do next.",
+                    "description": "Get current phase, checklist, transition options, and recalled lessons. Call at session start.",
                     "inputSchema": { "type": "object", "properties": { "domain": { "type": "string" } }, "required": ["domain"] }
                 },
                 {
@@ -756,7 +692,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "save_dead_end",
-                    "description": "Record a technique that was tried and ruled out. Prevents re-exploration loops. IMPORTANT: include assumption_tested and expected_if_vulnerable so future agents know the test was done correctly, not just abandoned.",
+                    "description": "Record a ruled-out technique to prevent re-exploration. Include assumption_tested and expected_if_vulnerable.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -772,7 +708,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "recall_engagement_state",
-                    "description": "Get a filtered view of the engagement. Lens options: progress (stats + phase), hosts (subdomains + infra), creds (credentials), open_hypotheses, dead_ends, attack_surface (untested endpoints + pending vectors), technique_gaps (which vulnerability categories have not been tested at all).",
+                    "description": "Filtered engagement snapshot. lens: progress|hosts|creds|open_hypotheses|dead_ends|attack_surface|technique_gaps.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -784,7 +720,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "record_lesson",
-                    "description": "Record a structured lesson from this engagement into episodic memory. Will be auto-recalled in future similar situations. Include domain_type so lessons only surface when context matches.",
+                    "description": "Record a lesson into episodic memory for future recall. Include domain_type to avoid cross-domain noise.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -802,7 +738,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "recall_similar_situations",
-                    "description": "Search episodic memory for lessons from past engagements matching a situation description. Pass domain_type to avoid cross-domain noise.",
+                    "description": "Search episodic memory for lessons matching a situation. Pass domain_type to filter.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -815,7 +751,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "generate_report",
-                    "description": "Generate a structured security audit report from all stored data: scope, findings (sorted by severity), coverage summary, and appendix with subdomains/credentials/cleanup status. Use this for final bug bounty submission.",
+                    "description": "Generate a structured audit report: scope, findings by severity, coverage summary, appendix.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -825,8 +761,8 @@ pub fn tools_list_msg(id: &Value) -> Value {
                     }
                 },
                 {
-                    "name": "spawn_agent",
-                    "description": "Register a sub-agent and get its ID. Use this before launching a sub-agent so you can track its work. Returns an ID and a ready-to-paste block to include in the sub-agent's prompt. Old finished agents are swept automatically - no manual cleanup needed.",
+                    "name": "track_agent",
+                    "description": "Register a sub-agent tracking record in DB (does NOT spawn a real process). Returns ID to pass to the spawned agent. Sweeps old finished records on call.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -839,11 +775,11 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "update_agent_status",
-                    "description": "Called by a sub-agent when it finishes (or fails). Also callable by the orchestrator to cancel a running agent. Include IDs of any hypotheses or findings the agent created.",
+                    "description": "Called by sub-agent on finish/fail, or by orchestrator to cancel. Include artifact IDs created.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "id":           { "type": "string", "description": "Agent ID from spawn_agent" },
+                            "id":           { "type": "string", "description": "Agent ID from track_agent" },
                             "status":       { "type": "string", "enum": ["active", "done", "failed", "cancelled"] },
                             "summary":      { "type": "string", "description": "What the agent found or why it failed" },
                             "artifact_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of hypotheses/findings created during this run" }
@@ -853,7 +789,7 @@ pub fn tools_list_msg(id: &Value) -> Value {
                 },
                 {
                     "name": "list_agents",
-                    "description": "Show agents for a domain. By default shows only active agents. Use all=true to see recently completed ones. Use this to check whether sub-agents are done before reading their results.",
+                    "description": "List agents for a domain. Default: active only. all=true includes recently completed.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
