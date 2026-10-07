@@ -1,4 +1,2 @@
-mod handlers;
-pub mod mcp_server;
-mod routes;
-pub mod server;
+pub mod http;
+pub mod mcp;

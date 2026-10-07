@@ -2,12 +2,11 @@ debug/
 target/
 
 **/*.rs.bk
-
 *.pdb
-
-Cargo.lock
-
 .DS_Store
+
+# Embedding model cache from older versions that wrote into the working directory.
+.fastembed_cache/
 
 /bin/*
 !/bin/.env.example

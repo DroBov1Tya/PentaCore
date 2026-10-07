@@ -1,31 +1,28 @@
 [package]
-name = "PentaCore"
-version = "0.1.12"
+name = "pentacore"
+version = "0.5.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
-axum = "0.8.9"
-axum-listener = "0.3.0"
-chrono = "0.4"
-clap = "4.6.1"
-colored = "3.1.1"
-dotenv = "0.15.0"
-hickory-resolver = { version = "0.26.1", features = ["tokio"] }
-obfstr = "0.4.4"
-rand = "0.10.1"
-ratatui = "0.30.0"
-regex = "1.12.3"
-reqwest = { version = "0.13.3", features = ["json", "socks", "rustls", "stream"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "rust_decimal"] }
-tokio = { version = "1.52.3", features = ["full"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "ansi"] }
-fastembed = "5.13.4"
-lancedb = "0.29.0"
 arrow-array = "58.3.0"
 arrow-schema = "58.3.0"
-uuid = { version = "1.23.1", features = ["v4"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dotenvy = "0.15.7"
+fastembed = { version = "5.13.4", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 futures = "0.3.32"
+lancedb = "0.29.0"
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "signal", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.23.1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

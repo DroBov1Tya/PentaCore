@@ -1,88 +1,47 @@
-use crate::config::{self, Config};
 use anyhow::Result;
-use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
-use tokio::signal;
-use tokio::sync::{Mutex, broadcast};
+use std::time::Duration;
+use tokio::sync::oneshot;
 
-mod client;
-mod database;
-pub mod rag;
+use crate::config::Config;
+
+pub mod memory;
 mod server;
+mod tools;
 
-use rag::store::MemoryStore;
-use server::mcp_server;
-use server::mcp_server::tool_registry::ToolRegistry;
+use memory::Brain;
 
-#[derive(Clone)]
-pub struct AppState {
-    pub cfg: &'static Config,
-    pub db: Pool<Sqlite>,
-    pub memory_store: Arc<Mutex<MemoryStore>>,
-    pub registry: Arc<ToolRegistry>,
-    pub shutdown: broadcast::Sender<()>,
-}
+const HTTP_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-pub struct Application {
-    state: Arc<AppState>,
-}
+pub async fn run(config: Config) -> Result<()> {
+    tracing::info!(home = %config.home.display(), project = config.default_project.as_str(), "starting pentacore");
+    let brain = Arc::new(Brain::open(&config.home, config.default_project)?);
 
-impl Application {
-    pub async fn build() -> Result<Self> {
-        tracing::info!("🔧 Building application...");
+    let (stop_http, http_stopped) = oneshot::channel::<()>();
+    let http = config.http.map(|http_config| {
+        let brain = Arc::clone(&brain);
+        tokio::spawn(server::http::serve(brain, http_config, async {
+            let _ = http_stopped.await;
+        }))
+    });
 
-        let _ = config::init();
-        let cfg = config::cfg();
-        let db = database::pool::init_pool(cfg.db_location.as_str()).await?;
-        let (shutdown, _) = broadcast::channel(1);
-
-        tracing::info!("🧠 Initializing embedded RAG memory (fastembed + lancedb)...");
-        let lancedb_path = cfg.db_location.replace("mcp.db", ".lancedb");
-        let memory_store = Arc::new(Mutex::new(
-            MemoryStore::new(lancedb_path.replace("sqlite:", "").as_str()).await?,
-        ));
-
-        let state = Arc::new(AppState {
-            cfg,
-            db,
-            memory_store,
-            registry: Arc::new(ToolRegistry::build()),
-            shutdown,
-        });
-
-        Ok(Self { state })
+    tokio::select! {
+        result = server::mcp::serve_stdio(Arc::clone(&brain)) => match result {
+            Ok(()) => tracing::info!("MCP client disconnected"),
+            Err(error) => tracing::error!("MCP stdio failed: {error:#}"),
+        },
+        _ = tokio::signal::ctrl_c() => tracing::info!("received Ctrl+C"),
     }
 
-    pub async fn run(self) -> Result<()> {
-        tracing::info!("🚀 Starting application...");
-
-        let state = Arc::clone(&self.state);
-        let server_state = Arc::clone(&self.state);
-        let mcp_state = Arc::clone(&self.state);
-
-        tokio::spawn(async move {
-            match server::server::start(server_state).await {
-                Ok(()) => tracing::info!("✅ REST API server stopped"),
-                Err(e) => tracing::warn!("⚠️ REST API server error (MCP stdio unaffected): {}", e),
-            }
-        });
-
-        tracing::info!("✅ Application ready");
-
-        tokio::select! {
-            result = mcp_server::start(mcp_state) => {
-                match result {
-                    Ok(()) => tracing::info!("✅ MCP stdio stopped gracefully"),
-                    Err(e) => tracing::error!("❌ MCP stdio error: {}", e),
-                }
-            }
-            _ = signal::ctrl_c() => {
-                tracing::info!("⚠️  Received Ctrl+C, shutting down...");
-            }
+    drop(stop_http);
+    if let Some(mut http) = http {
+        // Open connections must not keep the process alive after the agent is gone.
+        match tokio::time::timeout(HTTP_SHUTDOWN_GRACE, &mut http).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => tracing::warn!("HTTP API failed: {error:#}"),
+            Ok(Err(error)) => tracing::warn!("HTTP API task panicked: {error}"),
+            Err(_) => http.abort(),
         }
-
-        let _ = state.shutdown.send(());
-
-        Ok(())
     }
+    Ok(())
 }

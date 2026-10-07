@@ -1,18 +1,13 @@
-#![recursion_limit = "512"]
-use anyhow::{Ok, Result};
+use anyhow::Result;
 
 mod app;
 mod config;
-mod constants;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
+    config::load_env_file();
     config::init_logger();
 
-    let app = app::Application::build().await?;
-
-    app.run().await?;
-
-    Ok(())
+    let config = config::Config::from_env()?;
+    app::run(config).await
 }
