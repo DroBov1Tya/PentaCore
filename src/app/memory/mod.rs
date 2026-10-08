@@ -33,12 +33,13 @@ pub struct Brain {
 impl Brain {
     pub fn open(
         home: &Path,
+        key: &str,
         default_project: ProjectName,
         all_tools: bool,
     ) -> Result<Self, MemoryError> {
         create_private_dir(home)
             .with_context(|| format!("cannot create data directory {}", home.display()))?;
-        let db = Db::open(&home.join("brain.sqlite"))?;
+        let db = Db::open(home, key)?;
         Ok(Self {
             notes: NoteStore::new(db.clone()),
             entities: EntityStore::new(db.clone()),

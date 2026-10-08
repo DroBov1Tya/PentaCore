@@ -44,6 +44,15 @@ pub fn load_env_file() {
     }
 }
 
+// Key the database file is encrypted with. It ships inside the binary,
+// obfuscated, so the file cannot be opened by other tools; it does not protect
+// the data from someone who has this binary.
+const DB_KEY: &str = "0be8a7958121df67785b0c350c5671de2556be491a893f289020af4272cbd42c";
+
+pub fn db_key() -> String {
+    obfstr::obfstr!(DB_KEY).to_owned()
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub home: PathBuf,

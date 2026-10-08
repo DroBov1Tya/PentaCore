@@ -17,6 +17,7 @@ pub async fn run(config: Config) -> Result<()> {
     tracing::info!(home = %config.home.display(), project = config.default_project.as_str(), "starting pentacore");
     let brain = Arc::new(Brain::open(
         &config.home,
+        &crate::config::db_key(),
         config.default_project,
         config.all_tools,
     )?);

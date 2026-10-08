@@ -13,6 +13,10 @@ const MIGRATIONS: [&str; 3] = [
 ];
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+const FILE: &str = "brain.db";
+const LEGACY_FILE: &str = "brain.sqlite";
+const PLAIN_HEADER: &[u8] = b"SQLite format 3\0";
+
 type Result<T> = std::result::Result<T, MemoryError>;
 
 #[derive(Clone)]
@@ -21,8 +25,25 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(path: &Path) -> Result<Self> {
-        Self::prepare(Connection::open(path)?)
+    // Opens the encrypted database in the data directory, creating it when
+    // there is none. A plain database left by an earlier release is copied
+    // into an encrypted one first and left where it was.
+    pub fn open(home: &Path, key: &str) -> Result<Self> {
+        let path = home.join(FILE);
+        let legacy = home.join(LEGACY_FILE);
+        if !path.exists() && legacy.exists() {
+            if is_plain(&legacy)? {
+                encrypt_copy(&legacy, &path, key)?;
+                tracing::info!(
+                    "{LEGACY_FILE} was copied into the encrypted {FILE}; the old file is kept, \
+                     delete it once the new one is confirmed"
+                );
+            } else {
+                // Already encrypted, only under the old name.
+                return Self::prepare(unlocked(&legacy, key)?);
+            }
+        }
+        Self::prepare(unlocked(&path, key)?)
     }
 
     fn prepare(mut conn: Connection) -> Result<Self> {
@@ -72,6 +93,47 @@ impl Db {
         })
         .await?
     }
+}
+
+fn unlocked(path: &Path, key: &str) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "key", key)?;
+    // The key is only tested by the first read.
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+        .map_err(|_| anyhow!("{} cannot be opened with this build's key", path.display()))?;
+    Ok(conn)
+}
+
+fn is_plain(path: &Path) -> Result<bool> {
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    let read = std::fs::File::open(path)
+        .and_then(|mut file| file.read(&mut header))
+        .map_err(|error| anyhow!("cannot read {}: {error}", path.display()))?;
+    // An empty file is a database nobody has written to yet.
+    Ok(read == 0 || header[..read] == PLAIN_HEADER[..read])
+}
+
+// Written under a temporary name and renamed, so a failure leaves no half
+// made database behind. The source is only read.
+fn encrypt_copy(plain: &Path, encrypted: &Path, key: &str) -> Result<()> {
+    let partial = encrypted.with_extension("db.partial");
+    let _ = std::fs::remove_file(&partial);
+    let target = partial
+        .to_str()
+        .ok_or_else(|| anyhow!("data directory path is not valid UTF-8"))?;
+    let conn = Connection::open(plain)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    conn.execute("ATTACH DATABASE ?1 AS encrypted KEY ?2", [target, key])?;
+    conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))?;
+    // The export copies schema and rows, not the schema version.
+    conn.execute_batch(&format!("PRAGMA encrypted.user_version = {version}"))?;
+    conn.execute("DETACH DATABASE encrypted", [])?;
+    drop(conn);
+    std::fs::rename(&partial, encrypted)
+        .map_err(|error| anyhow!("cannot move the encrypted database into place: {error}"))?;
+    Ok(())
 }
 
 // Version is read under the write lock, so two processes cannot both migrate.

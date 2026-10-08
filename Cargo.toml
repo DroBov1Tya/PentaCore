@@ -1,6 +1,6 @@
 [package]
 name = "pentacore"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 
 [dependencies]
@@ -9,8 +9,9 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "json
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 dotenvy = "0.15.7"
 fastembed = { version = "5.13.4", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
+obfstr = "0.4.4"
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 subtle = "2.6.1"

@@ -6,7 +6,7 @@ An agent without memory goes in circles: it retries what already failed, loses i
 
 It is a tool, not a manager. It stores what it is given and returns what is asked for.
 
-- One local binary, one SQLite file. No services to run.
+- One local binary, one encrypted SQLite file. No services to run.
 - Built on the official Rust MCP SDK ([`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)).
 - Shared by any number of agents and projects at once.
 
@@ -75,6 +75,28 @@ claude mcp add pentacore -- /absolute/path/to/pentacore
 ```
 
 Then give the agent the usage guide in [`skills/pentacore-memory/SKILL.md`](skills/pentacore-memory/SKILL.md). For Claude Code, copy that directory into `~/.claude/skills/` or the project's `.claude/skills/`. For other agents, include its text in the system prompt.
+
+## Run in Docker
+
+```sh
+docker build -t pentacore:0.7.1 .
+```
+
+MCP runs over stdio, so the client starts the container. The memory lives in a named volume:
+
+```json
+{
+  "mcpServers": {
+    "pentacore": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "pentacore-data:/data",
+               "-e", "PENTACORE_PROJECT=my-project", "pentacore:0.7.1"]
+    }
+  }
+}
+```
+
+With Compose, the command is `docker compose run --rm -T pentacore` (see [`docker-compose.yml`](docker-compose.yml)); it adds a read-only root filesystem and drops all capabilities. The container runs as an unprivileged user. Set `PENTACORE_PROJECT` explicitly: inside a container there is no working directory to name the project after. The first `recall` needs network access to download the embedding model into the volume.
 
 ## Configuration
 
@@ -217,9 +239,11 @@ What is written to the memory is later read by an agent as context. An unauthori
 - **No caller text becomes SQL.** Values are bound parameters. Full-text queries are quoted, so FTS5 operators are plain text. Entity queries are assembled from an allowlist of fields and operators.
 - **Bounded everywhere.** Message size, body size, result counts, tree depth and attribute counts all have limits.
 - **Errors do not leak internals.** Callers see a short message; causes go to the log.
-- **Data at rest** sits in a `0700` directory. Deleted rows are overwritten (`secure_delete`), and the write-ahead log is emptied after a purge.
+- **Data at rest** sits in a `0700` directory, in `brain.db`, encrypted with SQLCipher. Deleted rows are overwritten (`secure_delete`), and the write-ahead log is emptied after a purge.
 
 Known limits:
+
+- The database key is a constant compiled into the binary, obfuscated. It keeps the file from being opened by other tools and by anyone who has the file alone. It does not protect the data from someone who has the binary, or the source: the key can be recovered from either. A binary built with a different key cannot open the file.
 
 - Stored text is not sanitised. An agent that saves untrusted text will read it back later; the usage guide tells agents to treat recalled memory as data, not instructions.
 - `author`, `run` and `task` are unverified labels, and so are `confidence` and `basis`: any caller can set them. Their earlier values stay in the revisions.
@@ -262,7 +286,7 @@ src/
 skills/pentacore-memory/    usage guide for agents
 ```
 
-The SQLite schema is versioned through `PRAGMA user_version`; a database from an older release is upgraded in place on start, in one transaction. A release older than this one cannot open the upgraded database, so copy `brain.sqlite` before the first start if you may need to go back.
+The database file is `brain.db`. A plain `brain.sqlite` left by a release up to 0.7.0 is copied into an encrypted `brain.db` on the first start and then upgraded there; the old file is only read and stays where it was, as a backup you can delete. The schema is versioned through `PRAGMA user_version` and upgraded in one transaction.
 
 ## License
 

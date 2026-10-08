@@ -1,0 +1,28 @@
+# pentacore as a container. MCP runs over stdio, so the MCP client starts it:
+#
+#   docker compose run --rm -T pentacore
+#
+# The memory lives in the `pentacore-data` volume and survives the container.
+
+services:
+  pentacore:
+    build: .
+    image: pentacore:0.7.1
+    stdin_open: true
+    environment:
+      # Project used when a tool call names none.
+      PENTACORE_PROJECT: ${PENTACORE_PROJECT:-default}
+      # `core` lists the everyday tools, `full` all of them.
+      PENTACORE_TOOLS: ${PENTACORE_TOOLS:-core}
+    volumes:
+      - pentacore-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pentacore-data:
