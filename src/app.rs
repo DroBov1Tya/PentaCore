@@ -16,6 +16,10 @@ const HTTP_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub async fn run(config: Config) -> Result<()> {
     tracing::info!(home = %config.home.display(), project = config.default_project.as_str(), "starting pentacore");
     let brain = Arc::new(Brain::open(&config.home, config.default_project)?);
+    // Concepts kept by an earlier version are moved into SQLite now, so that
+    // the old vector store is safe to delete once this process has started.
+    // A failure is logged inside and retried by the first tool that needs them.
+    brain.concepts.import_legacy().await?;
 
     let (stop_http, http_stopped) = oneshot::channel::<()>();
     let http = config.http.map(|http_config| {

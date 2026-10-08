@@ -2,14 +2,16 @@ use rusqlite::types::{Type, Value as Sql};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::fmt;
 use uuid::Uuid;
 
 use super::db::{Db, Tree};
+use super::journal::{self, Entry, RecordType};
 use super::model::{
-    AtMost, Author, EntityId, Limit, MemoryError, NoteId, NoteKind, ProjectName, Scope, Status,
-    Title, Token, invalid, now, seconds_from_now, string_enum, validated_string,
+    AtMost, Attribution, Author, EntityId, Limit, MemoryError, NoteId, NoteKind, ProjectName,
+    RunId, Scope, Status, Title, Token, invalid, now, seconds_from_now, string_enum,
+    validated_string,
 };
+use super::notes::check_task;
 
 const DEFAULT_STATUS: &str = "new";
 const MAX_KEY_CHARS: usize = 256;
@@ -54,6 +56,12 @@ fn is_attr_name(name: &str) -> bool {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(try_from = "f64")]
 pub struct Confidence(f64);
+
+impl Confidence {
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
 
 impl TryFrom<f64> for Confidence {
     type Error = String;
@@ -139,7 +147,15 @@ pub struct EntityUpsert {
     #[serde(default)]
     pub attrs: AttrsPatch,
     pub author: Option<Author>,
+    pub run: Option<RunId>,
+    pub task: Option<NoteId>,
     pub claim_id: Option<ClaimId>,
+}
+
+impl EntityUpsert {
+    fn who(&self) -> Attribution {
+        Attribution::new(self.author.clone(), self.run.clone(), self.task)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +164,7 @@ pub struct ClaimRequest {
     pub id: EntityId,
     pub ttl_seconds: Option<u32>,
     pub author: Option<Author>,
+    pub run: Option<RunId>,
     pub claim_id: Option<ClaimId>,
 }
 
@@ -157,6 +174,7 @@ pub struct ReleaseRequest {
     pub id: EntityId,
     pub claim_id: ClaimId,
     pub author: Option<Author>,
+    pub run: Option<RunId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +185,8 @@ pub struct CheckMark {
     pub result: Token,
     pub detail: Option<Title>,
     pub author: Option<Author>,
+    pub run: Option<RunId>,
+    pub task: Option<NoteId>,
     pub claim_id: Option<ClaimId>,
 }
 
@@ -187,6 +207,8 @@ pub struct ForgetEntity {
     #[serde(default)]
     pub recursive: bool,
     pub claim_id: Option<ClaimId>,
+    pub author: Option<Author>,
+    pub run: Option<RunId>,
 }
 
 string_enum!(Column {
@@ -661,18 +683,57 @@ fn author_text(author: &Option<Author>) -> Option<&str> {
     author.as_ref().map(Author::as_str)
 }
 
+// The event keeps the values and goes when the entity is deleted. The journal
+// entry names the fields only and stays.
 fn log_event(
     conn: &Connection,
     entity: EntityId,
-    event: &str,
+    op: journal::Op,
     detail: Value,
-    author: &Option<Author>,
+    who: &Attribution,
 ) -> Result<()> {
+    let project = project_of(conn, entity)?;
+    if let Some(task) = who.task {
+        check_task(conn, task, &project)?;
+    }
     conn.execute(
         "INSERT INTO entity_events (entity_id, event, detail, author, at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![entity, event, detail.to_string(), author_text(author), now()],
+        params![entity, op, detail.to_string(), who.author, now()],
+    )?;
+    let event = conn.last_insert_rowid();
+    journal::record(
+        conn,
+        Entry::new(&project, RecordType::Entity, entity, op, who)
+            .fields(changed_fields(op, &detail))
+            .event(event),
     )?;
     Ok(())
+}
+
+fn changed_fields(op: journal::Op, detail: &Value) -> Vec<String> {
+    let Some(detail) = detail.as_object() else {
+        return Vec::new();
+    };
+    match op {
+        journal::Op::Updated => detail
+            .iter()
+            .flat_map(
+                |(field, change)| match (field.as_str(), change.as_object()) {
+                    ("attrs", Some(attrs)) => {
+                        attrs.keys().map(|name| format!("attrs.{name}")).collect()
+                    }
+                    _ => vec![field.clone()],
+                },
+            )
+            .collect(),
+        journal::Op::Checked => detail
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|name| format!("check.{name}"))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 struct Claim {
@@ -786,7 +847,7 @@ fn insert(conn: &Connection, project: &str, input: &EntityUpsert) -> Result<Enti
         ],
     )?;
     let id = conn.last_insert_rowid();
-    log_event(conn, id, "created", json!({}), &input.author)?;
+    log_event(conn, id, journal::Op::Created, json!({}), &input.who())?;
     Ok(id)
 }
 
@@ -868,7 +929,13 @@ fn apply_changes(
             now()
         ],
     )?;
-    log_event(conn, id, "updated", Value::Object(changes), &input.author)?;
+    log_event(
+        conn,
+        id,
+        journal::Op::Updated,
+        Value::Object(changes),
+        &input.who(),
+    )?;
     Ok(true)
 }
 
@@ -901,9 +968,9 @@ fn claim(conn: &mut Connection, request: ClaimRequest) -> Result<ClaimGrant> {
     log_event(
         &tx,
         request.id,
-        "claimed",
+        journal::Op::Claimed,
         json!({ "until": claimed_until }),
-        &request.author,
+        &Attribution::new(request.author.clone(), request.run.clone(), None),
     )?;
     tx.commit()?;
     Ok(ClaimGrant {
@@ -926,7 +993,13 @@ fn release(conn: &mut Connection, request: ReleaseRequest) -> Result<bool> {
         "UPDATE entities SET claim_id = NULL, claimed_by = NULL, claim_expires_at = NULL WHERE id = ?1",
         [request.id],
     )?;
-    log_event(&tx, request.id, "released", json!({}), &request.author)?;
+    log_event(
+        &tx,
+        request.id,
+        journal::Op::Released,
+        json!({}),
+        &Attribution::new(request.author, request.run, None),
+    )?;
     tx.commit()?;
     Ok(true)
 }
@@ -956,7 +1029,13 @@ fn mark_check(conn: &mut Connection, mark: CheckMark) -> Result<Entity> {
         params![mark.id, now],
     )?;
     let detail = json!({ "name": mark.name.as_str(), "result": mark.result.as_str() });
-    log_event(&tx, mark.id, "checked", detail, &mark.author)?;
+    log_event(
+        &tx,
+        mark.id,
+        journal::Op::Checked,
+        detail,
+        &Attribution::new(mark.author.clone(), mark.run.clone(), mark.task),
+    )?;
     let entity = load(&tx, mark.id)?;
     tx.commit()?;
     Ok(entity)
@@ -969,15 +1048,31 @@ fn set_link(conn: &mut Connection, link: EntityLink) -> Result<bool> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     project_of(&tx, link.src)?;
     project_of(&tx, link.dst)?;
-    if link.remove {
-        tx.execute(
+    let (changed, op) = if link.remove {
+        let removed = tx.execute(
             "DELETE FROM entity_edges WHERE src = ?1 AND dst = ?2 AND kind = ?3",
             params![link.src, link.dst, link.kind.as_str()],
         )?;
+        (removed, journal::Op::Unlinked)
     } else {
-        tx.execute(
+        let added = tx.execute(
             "INSERT OR IGNORE INTO entity_edges (src, dst, kind, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![link.src, link.dst, link.kind.as_str(), now()],
+        )?;
+        (added, journal::Op::Linked)
+    };
+    if changed > 0 {
+        let project = project_of(&tx, link.src)?;
+        journal::record(
+            &tx,
+            Entry::new(
+                &project,
+                RecordType::Entity,
+                link.src,
+                op,
+                &Attribution::default(),
+            )
+            .fields([format!("{}:{}", link.kind.as_str(), link.dst)]),
         )?;
     }
     tx.commit()?;
@@ -1244,22 +1339,37 @@ fn forget(conn: &mut Connection, request: ForgetEntity) -> Result<i64> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     project_of(&tx, request.id)?;
     require_claim(&tx, request.id, request.claim_id)?;
-    let subtree_size: i64 = tx.query_row(
-        "WITH RECURSIVE sub (id) AS (
-             SELECT ?1
-             UNION
-             SELECT c.id FROM entities c JOIN sub ON c.parent_id = sub.id
-         )
-         SELECT count(*) FROM sub",
-        [request.id],
-        |row| row.get(0),
-    )?;
+    let doomed: Vec<(EntityId, String)> = tx
+        .prepare(
+            "WITH RECURSIVE sub (id) AS (
+                 SELECT ?1
+                 UNION
+                 SELECT c.id FROM entities c JOIN sub ON c.parent_id = sub.id
+             )
+             SELECT e.id, e.project FROM sub JOIN entities e ON e.id = sub.id",
+        )?
+        .query_map([request.id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let subtree_size = doomed.len() as i64;
     if subtree_size > 1 && !request.recursive {
         return Err(MemoryError::Conflict(format!(
             "entity {} has {} entities beneath it; pass recursive=true to delete them too",
             request.id,
             subtree_size - 1
         )));
+    }
+    let who = Attribution::new(request.author, request.run, None);
+    for (entity, project) in &doomed {
+        journal::record(
+            &tx,
+            Entry::new(
+                project,
+                RecordType::Entity,
+                entity,
+                journal::Op::Purged,
+                &who,
+            ),
+        )?;
     }
     // Children, edges, checks and events go through ON DELETE CASCADE.
     tx.execute("DELETE FROM entities WHERE id = ?1", [request.id])?;
@@ -1268,670 +1378,5 @@ fn forget(conn: &mut Connection, request: ForgetEntity) -> Result<i64> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::memory::notes::NoteStore;
-
-    fn project() -> ProjectName {
-        ProjectName::try_from("demo".to_string()).unwrap()
-    }
-
-    fn scope() -> Scope {
-        Scope::Project(project())
-    }
-
-    fn parse<T: serde::de::DeserializeOwned>(value: Value) -> T {
-        serde_json::from_value(value).unwrap()
-    }
-
-    async fn put(store: &EntityStore, entity: Value) -> Upserted {
-        try_put(store, entity).await.unwrap()
-    }
-
-    async fn try_put(store: &EntityStore, entity: Value) -> Result<Upserted> {
-        store.upsert(parse(entity), project()).await
-    }
-
-    async fn keys(store: &EntityStore, query: Value) -> Vec<String> {
-        let result = store.query(parse(query), scope()).await.unwrap();
-        result
-            .entities
-            .unwrap()
-            .into_iter()
-            .map(|entity| entity.key)
-            .collect()
-    }
-
-    async fn claim(store: &EntityStore, request: Value) -> Result<ClaimGrant> {
-        store.claim(parse(request)).await
-    }
-
-    #[tokio::test]
-    async fn upsert_creates_then_merges_then_reports_no_change() {
-        let store = EntityStore::new(Db::in_memory());
-        let created = put(
-            &store,
-            json!({"type": "endpoint", "key": "GET /users", "attrs": {"auth": true, "calls": 1}}),
-        )
-        .await;
-        assert_eq!(
-            (created.outcome, created.entity.status.as_str()),
-            ("created", DEFAULT_STATUS)
-        );
-
-        let updated = put(
-            &store,
-            json!({"type": "endpoint", "key": " GET /users ", "status": "verified", "confidence": 0.9,
-                   "attrs": {"calls": 2, "auth": null, "owner": "team-a"}, "author": "claude/a"}),
-        )
-        .await;
-        assert_eq!(
-            (updated.outcome, updated.entity.id),
-            ("updated", created.entity.id)
-        );
-        assert_eq!(updated.entity.attrs, json!({"calls": 2, "owner": "team-a"}));
-        assert_eq!(updated.entity.confidence, Some(0.9));
-
-        let same = put(&store, json!({"type": "endpoint", "key": "GET /users", "status": "verified", "attrs": {"calls": 2}})).await;
-        assert_eq!(same.outcome, "unchanged");
-        assert_eq!(same.entity.updated_at, updated.entity.updated_at);
-
-        let detail = store.get(created.entity.id).await.unwrap();
-        let events: Vec<&str> = detail
-            .events
-            .iter()
-            .map(|event| event.event.as_str())
-            .collect();
-        assert_eq!(events, ["updated", "created"]);
-        assert_eq!(
-            detail.events[0].detail["status"],
-            json!(["new", "verified"])
-        );
-        assert_eq!(detail.events[0].author.as_deref(), Some("claude/a"));
-    }
-
-    #[tokio::test]
-    async fn the_same_key_in_another_project_or_type_is_another_entity() {
-        let store = EntityStore::new(Db::in_memory());
-        let a = put(&store, json!({"type": "file", "key": "main.rs"}))
-            .await
-            .entity
-            .id;
-        let b = put(
-            &store,
-            json!({"type": "file", "key": "main.rs", "project": "other"}),
-        )
-        .await
-        .entity
-        .id;
-        let c = put(&store, json!({"type": "module", "key": "main.rs"}))
-            .await
-            .entity
-            .id;
-        assert!(a != b && a != c && b != c);
-    }
-
-    #[test]
-    fn malformed_entities_and_queries_are_rejected_when_parsed() {
-        let bad_entities = [
-            json!({"type": "Endpoint", "key": "k"}),
-            json!({"type": "endpoint", "key": "  "}),
-            json!({"type": "endpoint", "key": "k", "confidence": 1.5}),
-            json!({"type": "endpoint", "key": "k", "attrs": {"bad name": 1}}),
-            json!({"type": "endpoint", "key": "k", "attrs": {"$.x": 1}}),
-            json!({"type": "endpoint", "key": "k", "attrs": {"nested": {"a": 1}}}),
-            json!({"type": "endpoint", "key": "k", "attrs": {"list": [1]}}),
-            json!({"type": "endpoint", "key": "k", "attrs": {"long": "x".repeat(MAX_ATTR_TEXT_CHARS + 1)}}),
-            json!({"type": "endpoint", "key": "k", "claim_id": "not-a-uuid"}),
-            json!({"type": "endpoint", "key": "k", "sql": "DROP TABLE entities"}),
-        ];
-        for entity in bad_entities {
-            assert!(
-                serde_json::from_value::<EntityUpsert>(entity.clone()).is_err(),
-                "{entity}"
-            );
-        }
-
-        let bad_queries = [
-            json!({"where": [{"field": "status; DROP TABLE entities", "op": "eq", "value": "x"}]}),
-            json!({"where": [{"field": "attrs.a') OR 1=1 --", "op": "eq", "value": 1}]}),
-            json!({"where": [{"field": "attrs.", "op": "is_null"}]}),
-            json!({"where": [{"field": "check.Bad Name", "op": "is_null"}]}),
-            json!({"where": [{"field": "status", "op": "like", "value": "x"}]}),
-            json!({"where": [{"field": "status", "op": "eq"}]}),
-            json!({"where": [{"field": "status", "op": "eq", "value": [1]}]}),
-            json!({"where": [{"field": "status", "op": "in", "value": []}]}),
-            json!({"where": [{"field": "status", "op": "in", "value": vec![1; MAX_IN_VALUES + 1]}]}),
-            json!({"where": [{"field": "status", "op": "is_null", "value": 1}]}),
-            json!({"where": [{"field": "status", "op": "contains", "value": 5}]}),
-            json!({"order_by": "random()"}),
-            json!({"group_by": "e.claim_id"}),
-            json!({"where": vec![json!({"field": "id", "op": "not_null"}); 17]}),
-        ];
-        for query in bad_queries {
-            assert!(
-                serde_json::from_value::<EntityQuery>(query.clone()).is_err(),
-                "{query}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn queries_filter_by_columns_attributes_and_checks() {
-        let store = EntityStore::new(Db::in_memory());
-        let users = put(&store, json!({"type": "endpoint", "key": "/users", "status": "discovered", "confidence": 0.9, "attrs": {"method": "GET", "auth": true}})).await.entity.id;
-        let orders = put(&store, json!({"type": "endpoint", "key": "/orders", "status": "discovered", "confidence": 0.8, "attrs": {"method": "POST", "auth": false}})).await.entity.id;
-        put(&store, json!({"type": "endpoint", "key": "/health", "status": "discovered", "confidence": 0.3})).await;
-        put(
-            &store,
-            json!({"type": "endpoint", "key": "/admin", "status": "ignored", "confidence": 0.95}),
-        )
-        .await;
-        put(&store, json!({"type": "host", "key": "api.example", "status": "discovered", "confidence": 1.0})).await;
-        put(&store, json!({"type": "endpoint", "key": "/elsewhere", "status": "discovered", "confidence": 1.0, "project": "other"})).await;
-        store
-            .mark_check(parse(
-                json!({"id": users, "name": "access-control", "result": "pass"}),
-            ))
-            .await
-            .unwrap();
-
-        let pending = json!({"type": "endpoint", "order_by": "confidence", "descending": true, "where": [
-            {"field": "status", "op": "eq", "value": "discovered"},
-            {"field": "confidence", "op": "gt", "value": 0.7},
-            {"field": "check.access-control", "op": "is_null"},
-        ]});
-        assert_eq!(keys(&store, pending).await, ["/orders"]);
-
-        let by = |field: &str, op: &str, value: Value| json!({"type": "endpoint", "order_by": "key", "where": [{"field": field, "op": op, "value": value}]});
-        assert_eq!(
-            keys(&store, by("check.access-control", "eq", json!("pass"))).await,
-            ["/users"]
-        );
-        assert_eq!(
-            keys(&store, by("attrs.method", "in", json!(["GET", "PUT"]))).await,
-            ["/users"]
-        );
-        assert_eq!(
-            keys(&store, by("attrs.auth", "eq", json!(false))).await,
-            ["/orders"]
-        );
-        assert_eq!(
-            keys(&store, by("attrs.method", "ne", json!("GET"))).await,
-            ["/admin", "/health", "/orders"]
-        );
-        assert_eq!(
-            keys(&store, by("key", "contains", json!("ord"))).await,
-            ["/orders"]
-        );
-        assert_eq!(
-            keys(&store, by("confidence", "lte", json!(0.3))).await,
-            ["/health"]
-        );
-        assert_eq!(
-            keys(&store, by("id", "eq", json!(orders))).await,
-            ["/orders"]
-        );
-        assert_eq!(
-            keys(
-                &store,
-                json!({"where": [{"field": "attrs.method", "op": "not_null"}], "order_by": "key"})
-            )
-            .await,
-            ["/orders", "/users"]
-        );
-        assert_eq!(
-            keys(
-                &store,
-                json!({"type": "endpoint", "project": "*", "order_by": "key", "limit": 2})
-            )
-            .await,
-            ["/admin", "/elsewhere"]
-        );
-
-        assert!(
-            keys(&store, by("status", "eq", json!("x' OR '1'='1")))
-                .await
-                .is_empty()
-        );
-        assert!(
-            keys(&store, by("key", "contains", json!("%' OR 1=1 --")))
-                .await
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn group_by_counts_and_total_ignores_the_limit() {
-        let store = EntityStore::new(Db::in_memory());
-        for (key, status, owner) in [
-            ("a", "open", Some("x")),
-            ("b", "open", Some("y")),
-            ("c", "done", None),
-        ] {
-            put(
-                &store,
-                json!({"type": "task", "key": key, "status": status, "attrs": {"owner": owner}}),
-            )
-            .await;
-        }
-
-        let grouped = store
-            .query(parse(json!({"group_by": "status"})), scope())
-            .await
-            .unwrap();
-        let counts: Vec<(Value, i64)> = grouped
-            .groups
-            .unwrap()
-            .into_iter()
-            .map(|g| (g.value, g.count))
-            .collect();
-        assert_eq!(counts, [(json!("open"), 2), (json!("done"), 1)]);
-        assert_eq!(grouped.total, 3);
-
-        let by_attr = store
-            .query(parse(json!({"group_by": "attrs.owner", "where": [{"field": "status", "op": "eq", "value": "open"}]})), scope())
-            .await
-            .unwrap();
-        assert_eq!(by_attr.total, 2);
-        assert_eq!(by_attr.groups.unwrap().len(), 2);
-
-        let limited = store
-            .query(parse(json!({"limit": 1})), scope())
-            .await
-            .unwrap();
-        assert_eq!((limited.total, limited.entities.unwrap().len()), (3, 1));
-
-        let summary = store.summary(scope()).await.unwrap();
-        let rows: Vec<(&str, &str, i64)> = summary
-            .iter()
-            .map(|row| (row.kind.as_str(), row.status.as_str(), row.count))
-            .collect();
-        assert_eq!(rows, [("task", "done", 1), ("task", "open", 2)]);
-    }
-
-    #[tokio::test]
-    async fn a_claim_locks_out_everyone_without_its_id() {
-        let store = EntityStore::new(Db::in_memory());
-        let id = put(&store, json!({"type": "task", "key": "t"}))
-            .await
-            .entity
-            .id;
-
-        let grant = claim(&store, json!({"id": id, "author": "agent-a"}))
-            .await
-            .unwrap();
-        let second = claim(&store, json!({"id": id, "author": "agent-b"})).await;
-        assert!(
-            matches!(&second, Err(MemoryError::Conflict(message)) if message.contains("agent-a"))
-        );
-
-        // The author label opens nothing, only the claim id does.
-        let impostor = try_put(
-            &store,
-            json!({"type": "task", "key": "t", "status": "done", "author": "agent-a"}),
-        )
-        .await;
-        assert!(matches!(impostor, Err(MemoryError::Conflict(_))));
-        let wrong = try_put(&store, json!({"type": "task", "key": "t", "status": "done", "claim_id": Uuid::new_v4().to_string()})).await;
-        assert!(matches!(wrong, Err(MemoryError::Conflict(_))));
-        let check = store
-            .mark_check(parse(json!({"id": id, "name": "review", "result": "pass"})))
-            .await;
-        assert!(matches!(check, Err(MemoryError::Conflict(_))));
-        let delete = store.forget(parse(json!({"id": id}))).await;
-        assert!(matches!(delete, Err(MemoryError::Conflict(_))));
-        let steal = store
-            .release(parse(
-                json!({"id": id, "claim_id": Uuid::new_v4().to_string()}),
-            ))
-            .await;
-        assert!(matches!(steal, Err(MemoryError::Conflict(_))));
-
-        let seen = serde_json::to_value(store.get(id).await.unwrap()).unwrap();
-        assert_eq!(
-            (
-                seen["entity"]["claimed"].clone(),
-                seen["entity"]["claimed_by"].clone()
-            ),
-            (json!(true), json!("agent-a"))
-        );
-        assert!(!seen.to_string().contains(&grant.claim_id));
-        // A no-op write needs no claim, so id lookup still works.
-        assert_eq!(
-            put(&store, json!({"type": "task", "key": "t"}))
-                .await
-                .outcome,
-            "unchanged"
-        );
-
-        let held = put(
-            &store,
-            json!({"type": "task", "key": "t", "status": "done", "claim_id": grant.claim_id}),
-        )
-        .await;
-        assert_eq!(held.outcome, "updated");
-        let renewed = claim(
-            &store,
-            json!({"id": id, "claim_id": grant.claim_id, "ttl_seconds": 60}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(renewed.claim_id, grant.claim_id);
-
-        assert!(
-            store
-                .release(parse(json!({"id": id, "claim_id": grant.claim_id})))
-                .await
-                .unwrap()
-        );
-        assert!(
-            !store
-                .release(parse(json!({"id": id, "claim_id": grant.claim_id})))
-                .await
-                .unwrap()
-        );
-        assert_eq!(
-            keys(
-                &store,
-                json!({"where": [{"field": "claimed", "op": "eq", "value": true}]})
-            )
-            .await
-            .len(),
-            0
-        );
-        claim(&store, json!({"id": id, "author": "agent-b"}))
-            .await
-            .unwrap();
-        assert_eq!(
-            keys(
-                &store,
-                json!({"where": [{"field": "claimed", "op": "eq", "value": true}]})
-            )
-            .await,
-            ["t"]
-        );
-    }
-
-    #[tokio::test]
-    async fn an_expired_claim_no_longer_locks() {
-        let store = EntityStore::new(Db::in_memory());
-        let id = put(&store, json!({"type": "task", "key": "t"}))
-            .await
-            .entity
-            .id;
-        let stale = claim(&store, json!({"id": id, "author": "crashed"}))
-            .await
-            .unwrap();
-        store
-            .db
-            .run(move |conn| {
-                conn.execute(
-                    "UPDATE entities SET claim_expires_at = ?2 WHERE id = ?1",
-                    params![id, seconds_from_now(-1)],
-                )?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-
-        assert!(!store.get(id).await.unwrap().entity.claimed);
-        assert_eq!(
-            put(
-                &store,
-                json!({"type": "task", "key": "t", "status": "retry"})
-            )
-            .await
-            .outcome,
-            "updated"
-        );
-        let fresh = claim(&store, json!({"id": id, "author": "next"}))
-            .await
-            .unwrap();
-        assert_ne!(fresh.claim_id, stale.claim_id);
-        let late = try_put(
-            &store,
-            json!({"type": "task", "key": "t", "status": "done", "claim_id": stale.claim_id}),
-        )
-        .await;
-        assert!(matches!(late, Err(MemoryError::Conflict(_))));
-    }
-
-    #[tokio::test]
-    async fn claim_arguments_are_bounded() {
-        let store = EntityStore::new(Db::in_memory());
-        let id = put(&store, json!({"type": "task", "key": "t"}))
-            .await
-            .entity
-            .id;
-        for ttl in [0, MAX_CLAIM_SECONDS + 1] {
-            assert!(matches!(
-                claim(&store, json!({"id": id, "ttl_seconds": ttl})).await,
-                Err(MemoryError::Invalid(_))
-            ));
-        }
-        assert!(matches!(
-            claim(&store, json!({"id": 999})).await,
-            Err(MemoryError::NotFound(_))
-        ));
-        assert!(
-            claim(&store, json!({"id": id, "ttl_seconds": MAX_CLAIM_SECONDS}))
-                .await
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
-    async fn concurrent_claims_have_exactly_one_winner() {
-        let store = EntityStore::new(Db::in_memory());
-        let id = put(&store, json!({"type": "task", "key": "t"}))
-            .await
-            .entity
-            .id;
-        let attempts = (0..16).map(|n| {
-            let store = store.clone();
-            tokio::spawn(async move {
-                store
-                    .claim(parse(json!({"id": id, "author": format!("agent-{n}")})))
-                    .await
-            })
-        });
-        let mut winners = 0;
-        for attempt in attempts.collect::<Vec<_>>() {
-            match attempt.await.unwrap() {
-                Ok(_) => winners += 1,
-                Err(error) => assert!(matches!(error, MemoryError::Conflict(_))),
-            }
-        }
-        assert_eq!(winners, 1);
-    }
-
-    #[tokio::test]
-    async fn the_tree_stays_acyclic_and_inside_one_project() {
-        let store = EntityStore::new(Db::in_memory());
-        let host = put(&store, json!({"type": "host", "key": "h"}))
-            .await
-            .entity
-            .id;
-        let service = put(
-            &store,
-            json!({"type": "service", "key": "s", "parent": host}),
-        )
-        .await
-        .entity
-        .id;
-        let endpoint = put(
-            &store,
-            json!({"type": "endpoint", "key": "e", "parent": service}),
-        )
-        .await
-        .entity
-        .id;
-        let foreign = put(
-            &store,
-            json!({"type": "host", "key": "h", "project": "other"}),
-        )
-        .await
-        .entity
-        .id;
-
-        let cycle = try_put(
-            &store,
-            json!({"type": "host", "key": "h", "parent": endpoint}),
-        )
-        .await;
-        assert!(matches!(cycle, Err(MemoryError::Conflict(_))));
-        let itself = try_put(&store, json!({"type": "host", "key": "h", "parent": host})).await;
-        assert!(matches!(itself, Err(MemoryError::Conflict(_))));
-        let cross = try_put(
-            &store,
-            json!({"type": "service", "key": "s", "parent": foreign}),
-        )
-        .await;
-        assert!(matches!(cross, Err(MemoryError::Invalid(_))));
-        let cross_new = try_put(
-            &store,
-            json!({"type": "service", "key": "new", "parent": foreign}),
-        )
-        .await;
-        assert!(matches!(cross_new, Err(MemoryError::Invalid(_))));
-        let orphan = try_put(
-            &store,
-            json!({"type": "service", "key": "x", "parent": 999}),
-        )
-        .await;
-        assert!(matches!(orphan, Err(MemoryError::NotFound(_))));
-
-        assert!(
-            store
-                .link(parse(
-                    json!({"src": endpoint, "dst": host, "kind": "calls"})
-                ))
-                .await
-                .unwrap()
-        );
-        assert!(matches!(
-            store
-                .link(parse(json!({"src": host, "dst": host, "kind": "calls"})))
-                .await,
-            Err(MemoryError::Invalid(_))
-        ));
-        assert!(matches!(
-            store
-                .link(parse(json!({"src": host, "dst": 999, "kind": "calls"})))
-                .await,
-            Err(MemoryError::NotFound(_))
-        ));
-
-        let graph = store.graph(host, 8).await.unwrap();
-        let order: Vec<(EntityId, i64)> = graph
-            .nodes
-            .iter()
-            .map(|node| (node.id, node.depth))
-            .collect();
-        assert_eq!(order, [(host, 0), (service, 1), (endpoint, 2)]);
-        assert_eq!(
-            graph.edges,
-            [EntityEdge {
-                src: endpoint,
-                dst: host,
-                kind: "calls".into()
-            }]
-        );
-        assert_eq!(store.graph(host, 1).await.unwrap().nodes.len(), 2);
-
-        assert!(
-            !store
-                .link(parse(
-                    json!({"src": endpoint, "dst": host, "kind": "calls", "remove": true})
-                ))
-                .await
-                .unwrap()
-        );
-        assert!(store.graph(host, 8).await.unwrap().edges.is_empty());
-
-        assert!(matches!(
-            store.forget(parse(json!({"id": host}))).await,
-            Err(MemoryError::Conflict(_))
-        ));
-        assert_eq!(
-            store
-                .forget(parse(json!({"id": host, "recursive": true})))
-                .await
-                .unwrap(),
-            3
-        );
-        assert!(matches!(
-            store.get(endpoint).await,
-            Err(MemoryError::NotFound(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn an_entity_cannot_outgrow_its_attribute_limit() {
-        let store = EntityStore::new(Db::in_memory());
-        let batch = |from: usize| -> Value {
-            let attrs: Map<String, Value> = (from..from + MAX_ATTRS_PER_CALL)
-                .map(|n| (format!("a{n}"), json!(n)))
-                .collect();
-            json!({"type": "task", "key": "t", "attrs": attrs})
-        };
-        put(&store, batch(0)).await;
-        put(&store, batch(MAX_ATTRS_PER_CALL)).await;
-        let overflow = try_put(&store, batch(MAX_ATTRS_PER_CALL * 2)).await;
-        assert!(matches!(overflow, Err(MemoryError::Invalid(_))));
-    }
-
-    #[tokio::test]
-    async fn notes_attach_to_entities_of_their_own_project() {
-        let db = Db::in_memory();
-        let (entities, notes) = (EntityStore::new(db.clone()), NoteStore::new(db));
-        let entity = put(&entities, json!({"type": "endpoint", "key": "/users"}))
-            .await
-            .entity
-            .id;
-        let foreign = put(
-            &entities,
-            json!({"type": "endpoint", "key": "/users", "project": "other"}),
-        )
-        .await
-        .entity
-        .id;
-        let note = |value: Value| notes.create(parse(value), project());
-
-        let about =
-            note(json!({"kind": "fact", "title": "Returns 500 on empty page", "entity": entity}))
-                .await
-                .unwrap()
-                .note;
-        assert_eq!(about.entity, Some(entity));
-        note(json!({"kind": "fact", "title": "Unrelated 500"}))
-            .await
-            .unwrap();
-        assert!(matches!(
-            note(json!({"kind": "fact", "title": "x", "entity": foreign})).await,
-            Err(MemoryError::Invalid(_))
-        ));
-        assert!(matches!(
-            note(json!({"kind": "fact", "title": "x", "entity": 999})).await,
-            Err(MemoryError::NotFound(_))
-        ));
-
-        let found = notes
-            .find(parse(json!({"query": "500", "entity": entity})), scope())
-            .await
-            .unwrap();
-        assert_eq!(
-            found.hits.iter().map(|hit| hit.note.id).collect::<Vec<_>>(),
-            [about.id]
-        );
-        let detail = entities.get(entity).await.unwrap();
-        assert_eq!(
-            detail.notes.iter().map(|note| note.id).collect::<Vec<_>>(),
-            [about.id]
-        );
-
-        entities.forget(parse(json!({"id": entity}))).await.unwrap();
-        assert_eq!(notes.get(about.id).await.unwrap().note.entity, None);
-    }
-}
+#[path = "tests/entities.rs"]
+mod tests;

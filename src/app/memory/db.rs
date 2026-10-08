@@ -6,9 +6,11 @@ use std::time::Duration;
 
 use super::model::{MemoryError, invalid};
 
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 4] = [
     include_str!("migrations/001_notes.sql"),
     include_str!("migrations/002_state.sql"),
+    include_str!("migrations/003_history.sql"),
+    include_str!("migrations/004_practices.sql"),
 ];
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -40,6 +42,23 @@ impl Db {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    // Moves everything out of the write-ahead log and empties it. A deleted
+    // row is overwritten in the database file, but its old pages would
+    // otherwise stay readable in the log until the log is next recycled.
+    pub async fn scrub_log(&self) -> Result<()> {
+        self.run(|conn| {
+            let busy: i64 =
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+            if busy != 0 {
+                return Err(
+                    anyhow!("another connection is reading; the log was not emptied").into(),
+                );
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub async fn run<T, F>(&self, work: F) -> Result<T>
@@ -159,44 +178,5 @@ impl Tree {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn version(conn: &Connection) -> i64 {
-        conn.pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap()
-    }
-
-    #[test]
-    fn a_database_from_the_first_release_is_upgraded_in_place() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(MIGRATIONS[0]).unwrap();
-        conn.pragma_update(None, "user_version", 1).unwrap();
-        conn.execute(
-            "INSERT INTO notes (project, kind, status, title, body, tags, created_at, updated_at)
-             VALUES ('p', 'fact', 'active', 'old note', '', '', 't', 't')",
-            [],
-        )
-        .unwrap();
-
-        migrate(&mut conn).unwrap();
-        assert_eq!(version(&conn), MIGRATIONS.len() as i64);
-        let (title, author): (String, Option<String>) = conn
-            .query_row("SELECT title, author FROM notes", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .unwrap();
-        assert_eq!((title.as_str(), author), ("old note", None));
-
-        migrate(&mut conn).unwrap();
-        assert_eq!(version(&conn), MIGRATIONS.len() as i64);
-    }
-
-    #[test]
-    fn a_database_from_a_newer_build_is_refused() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.pragma_update(None, "user_version", MIGRATIONS.len() as i64 + 1)
-            .unwrap();
-        assert!(migrate(&mut conn).is_err());
-    }
-}
+#[path = "tests/db.rs"]
+mod tests;

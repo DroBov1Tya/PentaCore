@@ -1,8 +1,14 @@
 pub mod concepts;
 pub mod db;
 pub mod entities;
+pub mod index;
+pub mod journal;
 pub mod model;
 pub mod notes;
+pub mod practices;
+pub mod recall;
+pub mod tasks;
+pub mod words;
 
 use anyhow::Context;
 use std::path::Path;
@@ -10,13 +16,18 @@ use std::path::Path;
 use concepts::ConceptStore;
 use db::Db;
 use entities::EntityStore;
+use index::Semantic;
+use journal::Journal;
 use model::{MemoryError, ProjectName, Scope};
 use notes::NoteStore;
 
 pub struct Brain {
+    pub db: Db,
     pub notes: NoteStore,
     pub entities: EntityStore,
     pub concepts: ConceptStore,
+    pub journal: Journal,
+    pub semantic: Semantic,
     pub default_project: ProjectName,
 }
 
@@ -25,12 +36,30 @@ impl Brain {
         create_private_dir(home)
             .with_context(|| format!("cannot create data directory {}", home.display()))?;
         let db = Db::open(&home.join("brain.sqlite"))?;
-        Ok(Self {
-            notes: NoteStore::new(db.clone()),
-            entities: EntityStore::new(db),
-            concepts: ConceptStore::new(home.join("concepts.lancedb"), home.join("models")),
+        Ok(Self::assemble(
+            db,
+            home.join("concepts.lancedb"),
+            Some(home.join("models")),
             default_project,
-        })
+        ))
+    }
+
+    pub fn assemble(
+        db: Db,
+        index_path: std::path::PathBuf,
+        model_cache: Option<std::path::PathBuf>,
+        default_project: ProjectName,
+    ) -> Self {
+        let semantic = Semantic::new(db.clone(), index_path, model_cache);
+        Self {
+            notes: NoteStore::new(db.clone()),
+            entities: EntityStore::new(db.clone()),
+            concepts: ConceptStore::new(db.clone(), semantic.clone()),
+            journal: Journal::new(db.clone()),
+            semantic,
+            db,
+            default_project,
+        }
     }
 
     pub fn default_scope(&self) -> Scope {
