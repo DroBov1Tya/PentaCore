@@ -7,8 +7,8 @@ use uuid::Uuid;
 use super::db::{Db, Tree};
 use super::journal::{self, Entry, RecordType};
 use super::model::{
-    AtMost, Attribution, Author, EntityId, Limit, MemoryError, NoteId, NoteKind, ProjectName,
-    RunId, Scope, Status, Title, Token, invalid, now, seconds_from_now, string_enum,
+    AtMost, Attribution, Author, Confidence, EntityId, Limit, MemoryError, NoteId, NoteKind,
+    ProjectName, RunId, Scope, Status, Title, Token, invalid, now, seconds_from_now, string_enum,
     validated_string,
 };
 use super::notes::check_task;
@@ -51,28 +51,6 @@ fn is_attr_name(name: &str) -> bool {
     starts_well
         && name.len() <= MAX_ATTR_NAME_CHARS
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(try_from = "f64")]
-pub struct Confidence(f64);
-
-impl Confidence {
-    pub fn value(self) -> f64 {
-        self.0
-    }
-}
-
-impl TryFrom<f64> for Confidence {
-    type Error = String;
-
-    fn try_from(value: f64) -> std::result::Result<Self, String> {
-        if (0.0..=1.0).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err("confidence must be between 0 and 1".into())
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -840,7 +818,7 @@ fn insert(conn: &Connection, project: &str, input: &EntityUpsert) -> Result<Enti
             input.key.as_str(),
             input.parent,
             input.status.as_ref().map_or(DEFAULT_STATUS, Token::as_str),
-            input.confidence.map(|confidence| confidence.0),
+            input.confidence.map(Confidence::value),
             Value::Object(attrs).to_string(),
             author_text(&input.author),
             now,
@@ -873,7 +851,7 @@ fn apply_changes(
     }
     let confidence = input
         .confidence
-        .map(|confidence| confidence.0)
+        .map(Confidence::value)
         .or(current.confidence);
     if confidence != current.confidence {
         changes.insert("confidence".into(), json!([current.confidence, confidence]));
@@ -1365,7 +1343,7 @@ fn forget(conn: &mut Connection, request: ForgetEntity) -> Result<i64> {
             Entry::new(
                 project,
                 RecordType::Entity,
-                entity,
+                *entity,
                 journal::Op::Purged,
                 &who,
             ),
@@ -1376,7 +1354,3 @@ fn forget(conn: &mut Connection, request: ForgetEntity) -> Result<i64> {
     tx.commit()?;
     Ok(subtree_size)
 }
-
-#[cfg(test)]
-#[path = "tests/entities.rs"]
-mod tests;

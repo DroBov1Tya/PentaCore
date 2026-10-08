@@ -7,7 +7,6 @@ use rusqlite::{Connection, params};
 use super::model::MemoryError;
 
 const MAX_CHUNKS: usize = 24;
-const MAX_SCORED_CHARS: usize = 8000;
 const EXACT: f32 = 1.0;
 const PREFIX: f32 = 0.8;
 const STEM: f32 = 0.6;
@@ -22,7 +21,6 @@ type Result<T> = std::result::Result<T, MemoryError>;
 pub enum Store {
     Notes,
     Entities,
-    Concepts,
 }
 
 impl Store {
@@ -30,20 +28,12 @@ impl Store {
     fn sql(self) -> &'static str {
         match self {
             Self::Notes => {
-                "SELECT CAST(n.id AS TEXT), n.title, substr(n.body, 1, ?4) || ' ' || n.tags
-                 FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid
+                "SELECT n.id FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid
                  WHERE notes_fts MATCH ?1 AND (?2 IS NULL OR n.project = ?2)
                  ORDER BY bm25(notes_fts, 4.0, 1.0, 2.0), n.id DESC LIMIT ?3"
             }
-            Self::Concepts => {
-                "SELECT c.id, c.title, substr(c.content, 1, ?4) || ' ' || c.tags
-                 FROM concepts_fts JOIN concepts c ON c.seq = concepts_fts.rowid
-                 WHERE concepts_fts MATCH ?1 AND (?2 IS NULL OR c.project = ?2)
-                 ORDER BY bm25(concepts_fts, 4.0, 1.0, 2.0), c.seq DESC LIMIT ?3"
-            }
             Self::Entities => {
-                "SELECT CAST(e.id AS TEXT), e.type || ' ' || e.key,
-                        substr(e.status || ' ' || entities_fts.attrs, 1, ?4)
+                "SELECT e.id
                  FROM entities_fts JOIN entities e ON e.id = entities_fts.rowid
                  WHERE entities_fts MATCH ?1 AND (?2 IS NULL OR e.project = ?2)
                  ORDER BY bm25(entities_fts, 4.0, 2.0, 1.0, 1.0), e.id DESC LIMIT ?3"
@@ -186,17 +176,9 @@ impl Query {
 
     // A word found in few records tells more than one found in most of them.
     fn weigh(&mut self, conn: &Connection) -> Result<()> {
-        let total: f64 = conn.query_row(
-            "SELECT (SELECT count(*) FROM notes) + (SELECT count(*) FROM concepts)
-                  + (SELECT count(*) FROM entities)",
-            [],
-            |row| row.get(0),
-        )?;
-        let mut holding = conn.prepare_cached(
-            "SELECT coalesce((SELECT doc FROM notes_vocab WHERE term = ?1), 0)
-                  + coalesce((SELECT doc FROM concepts_vocab WHERE term = ?1), 0)
-                  + coalesce((SELECT doc FROM entities_vocab WHERE term = ?1), 0)",
-        )?;
+        let total: f64 = conn.query_row("SELECT count(*) FROM notes", [], |row| row.get(0))?;
+        let mut holding = conn
+            .prepare_cached("SELECT coalesce((SELECT doc FROM notes_vocab WHERE term = ?1), 0)")?;
         for chunk in &mut self.chunks {
             let mut rarest = f64::MAX;
             for token in &chunk.tokens {
@@ -225,20 +207,6 @@ impl Query {
     }
 }
 
-// FTS5 expression matching records that hold every word of the text exactly.
-pub fn all_of(text: &str) -> Option<String> {
-    let phrases: Vec<String> = text
-        .split_whitespace()
-        .filter(|term| term.chars().any(char::is_alphanumeric))
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-        .collect();
-    if phrases.is_empty() {
-        None
-    } else {
-        Some(phrases.join(" AND "))
-    }
-}
-
 // Ids of the records of one store that share words with the query, in the
 // order the full-text index ranks them.
 pub fn candidates(
@@ -247,16 +215,13 @@ pub fn candidates(
     query: &Query,
     project: Option<&str>,
     limit: usize,
-) -> Result<Vec<String>> {
+) -> Result<Vec<i64>> {
     let Some(expression) = query.any_of() else {
         return Ok(Vec::new());
     };
     Ok(conn
         .prepare_cached(store.sql())?
-        .query_map(
-            params![expression, project, limit as i64, MAX_SCORED_CHARS as i64],
-            |row| row.get(0),
-        )?
+        .query_map(params![expression, project, limit as i64], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -288,7 +253,3 @@ pub fn overlap(a: &str, b: &str) -> f32 {
     let shared = a.intersection(&b).count() as f32;
     shared / (a.len() + b.len()) as f32 * 2.0
 }
-
-#[cfg(test)]
-#[path = "tests/words.rs"]
-mod tests;

@@ -1,4 +1,3 @@
-pub mod concepts;
 pub mod db;
 pub mod entities;
 pub mod index;
@@ -13,7 +12,6 @@ pub mod words;
 use anyhow::Context;
 use std::path::Path;
 
-use concepts::ConceptStore;
 use db::Db;
 use entities::EntityStore;
 use index::Semantic;
@@ -25,41 +23,31 @@ pub struct Brain {
     pub db: Db,
     pub notes: NoteStore,
     pub entities: EntityStore,
-    pub concepts: ConceptStore,
     pub journal: Journal,
     pub semantic: Semantic,
     pub default_project: ProjectName,
+    // Whether the agent is shown every tool or only the everyday ones.
+    pub all_tools: bool,
 }
 
 impl Brain {
-    pub fn open(home: &Path, default_project: ProjectName) -> Result<Self, MemoryError> {
+    pub fn open(
+        home: &Path,
+        default_project: ProjectName,
+        all_tools: bool,
+    ) -> Result<Self, MemoryError> {
         create_private_dir(home)
             .with_context(|| format!("cannot create data directory {}", home.display()))?;
         let db = Db::open(&home.join("brain.sqlite"))?;
-        Ok(Self::assemble(
-            db,
-            home.join("concepts.lancedb"),
-            Some(home.join("models")),
-            default_project,
-        ))
-    }
-
-    pub fn assemble(
-        db: Db,
-        index_path: std::path::PathBuf,
-        model_cache: Option<std::path::PathBuf>,
-        default_project: ProjectName,
-    ) -> Self {
-        let semantic = Semantic::new(db.clone(), index_path, model_cache);
-        Self {
+        Ok(Self {
             notes: NoteStore::new(db.clone()),
             entities: EntityStore::new(db.clone()),
-            concepts: ConceptStore::new(db.clone(), semantic.clone()),
             journal: Journal::new(db.clone()),
-            semantic,
+            semantic: Semantic::new(db.clone(), Some(home.join("models"))),
             db,
             default_project,
-        }
+            all_tools,
+        })
     }
 
     pub fn default_scope(&self) -> Scope {

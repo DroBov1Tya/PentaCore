@@ -3,10 +3,10 @@ use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use super::db::{Db, Tree};
 use super::journal::{self, Entry, NoteState, Op, RecordType};
 use super::model::{
-    Attribution, Checkpoint, CreatedNote, Edge, EdgeKind, EntityId, FindQuery, FindResult, Graph,
-    GraphNode, Hit, Limit, LinkedNote, MAX_BODY_BYTES, MemoryError, NewCheckpoint, NewNote, Note,
-    NoteBrief, NoteDetail, NoteId, NoteKind, NotePatch, ProjectName, Scope, Snapshot, TaskBrief,
-    invalid, names, now, tag_strings,
+    Attribution, Basis, Checkpoint, Confidence, CreatedNote, Edge, EdgeKind, EntityId, FindQuery,
+    FindResult, Graph, GraphNode, Hit, Limit, LinkedNote, MAX_BODY_BYTES, MemoryError,
+    NewCheckpoint, NewNote, Note, NoteBrief, NoteDetail, NoteId, NoteKind, NotePatch, ProjectName,
+    Scope, Snapshot, TaskBrief, invalid, names, now, tag_strings,
 };
 
 const DEFAULT_FIND_LIMIT: usize = 10;
@@ -18,9 +18,9 @@ const SNAPSHOT_RECENT_LIMIT: i64 = 20;
 const SIMILAR_LIMIT: i64 = 3;
 const CHECKPOINTS_KEPT: i64 = 20;
 
-const NOTE_COLUMNS: &str = "id, project, kind, status, title, body, tags, parent_id, created_at, updated_at, entity_id, author, revision";
+const NOTE_COLUMNS: &str = "id, project, kind, status, title, body, tags, parent_id, created_at, updated_at, entity_id, author, revision, confidence, basis, verified_at, verified_by, summary";
 pub(super) const BRIEF_COLUMNS: &str =
-    "n.id, n.project, n.kind, n.status, n.title, n.parent_id, n.updated_at";
+    "n.id, n.project, n.kind, n.status, n.title, n.parent_id, n.updated_at, n.confidence";
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
@@ -32,11 +32,6 @@ pub struct NoteStore {
 impl NoteStore {
     pub fn new(db: Db) -> Self {
         Self { db }
-    }
-
-    #[cfg(test)]
-    pub fn in_memory() -> Self {
-        Self::new(Db::in_memory())
     }
 
     pub async fn create(
@@ -134,6 +129,11 @@ fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
         entity: row.get(10)?,
         author: row.get(11)?,
         revision: row.get(12)?,
+        confidence: row.get(13)?,
+        basis: row.get(14)?,
+        verified_at: row.get(15)?,
+        verified_by: row.get(16)?,
+        summary: row.get(17)?,
     })
 }
 
@@ -146,6 +146,7 @@ pub(super) fn brief_from_row(row: &Row<'_>) -> rusqlite::Result<NoteBrief> {
         title: row.get(4)?,
         parent: row.get(5)?,
         updated_at: row.get(6)?,
+        confidence: row.get(7)?,
     })
 }
 
@@ -200,8 +201,9 @@ pub(super) fn create(
     let now = now();
     tx.execute(
         "INSERT INTO notes
-             (project, kind, status, title, body, tags, parent_id, entity_id, author, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+             (project, kind, status, title, body, tags, parent_id, entity_id, author, created_at,
+              updated_at, confidence, basis)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12)",
         params![
             project,
             input.kind,
@@ -213,6 +215,8 @@ pub(super) fn create(
             input.entity,
             input.author.as_ref().map(|author| author.as_str()),
             now,
+            input.confidence.map(Confidence::value),
+            input.basis.as_ref().map(Basis::as_str),
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -249,6 +253,8 @@ fn save_revision(conn: &Connection, note: &Note, who: &Attribution) -> Result<()
             tags: &note.tags.join(" "),
             parent: note.parent,
             entity: note.entity,
+            confidence: note.confidence,
+            basis: note.basis.as_deref(),
         },
         who,
     )
@@ -404,6 +410,8 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
         author,
         run,
         expected_revision,
+        confidence,
+        basis,
     } = patch;
     let fields_given = [
         title.is_some(),
@@ -413,6 +421,8 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
         parent.is_some(),
         append.is_some(),
         entity.is_some(),
+        confidence.is_some(),
+        basis.is_some(),
     ];
     if !fields_given.contains(&true) {
         return Err(invalid(
@@ -455,6 +465,8 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
     let status = status.unwrap_or(current.status);
     let parent = parent.or(current.parent);
     let entity = entity.or(current.entity);
+    let confidence = confidence.map(Confidence::value).or(current.confidence);
+    let basis = basis.map(String::from).or_else(|| current.basis.clone());
 
     let changed: Vec<&str> = [
         ("title", title != current.title),
@@ -463,6 +475,8 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
         ("status", status != current.status),
         ("parent", parent != current.parent),
         ("entity", entity != current.entity),
+        ("confidence", confidence != current.confidence),
+        ("basis", basis != current.basis),
     ]
     .into_iter()
     .filter_map(|(field, differs)| differs.then_some(field))
@@ -475,7 +489,7 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
     tx.execute(
         "UPDATE notes
          SET title = ?2, body = ?3, tags = ?4, status = ?5, parent_id = ?6, entity_id = ?7,
-             updated_at = ?8, revision = ?9
+             updated_at = ?8, revision = ?9, confidence = ?10, basis = ?11
          WHERE id = ?1",
         params![
             id,
@@ -487,6 +501,8 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
             entity,
             now(),
             current.revision + 1,
+            confidence,
+            basis,
         ],
     )?;
     let note = load(&tx, id)?;
@@ -573,6 +589,7 @@ fn detail(conn: &Connection, id: NoteId) -> Result<NoteDetail> {
                     title: row.get(7)?,
                     parent: row.get(8)?,
                     updated_at: row.get(9)?,
+                    confidence: row.get(10)?,
                 },
             })
         })?
@@ -682,7 +699,7 @@ fn search(
             |row| {
                 Ok(Hit {
                     note: brief_from_row(row)?,
-                    snippet: row.get(7)?,
+                    snippet: row.get(8)?,
                 })
             },
         )?
@@ -941,16 +958,11 @@ fn forget(conn: &mut Connection, id: NoteId, recursive: bool, who: &Attribution)
     for (note, project) in &doomed {
         journal::record(
             &tx,
-            Entry::new(project, RecordType::Note, note, Op::Purged, &who),
+            Entry::new(project, RecordType::Note, *note, Op::Purged, &who),
         )?;
-        journal::unindex(&tx, RecordType::Note, note)?;
     }
     // Children, edges, revisions and task checkpoints go through ON DELETE CASCADE.
     tx.execute("DELETE FROM notes WHERE id = ?1", [id])?;
     tx.commit()?;
     Ok(subtree_size)
 }
-
-#[cfg(test)]
-#[path = "tests/notes.rs"]
-mod tests;

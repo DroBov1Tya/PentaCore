@@ -1,21 +1,19 @@
-// Checklists (done or not), one summary per task, confidence with its basis,
-// and a review of what needs attention.
+// Checklists (done or not), one summary per task, confirming a note, and a
+// review of what needs attention.
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::entities::Confidence;
-use super::journal::{self, Entry, Op, RecordId, RecordType};
+use super::journal::{self, Entry, NoteState, Op, RecordType};
 use super::model::{
-    AtMost, Attribution, Author, Body, MemoryError, NewNote, NoteId, NoteKind, NotePatch,
-    ProjectName, RunId, Scope, Title, invalid, now, seconds_from_now, validated_string,
+    AtMost, Attribution, Author, Basis, Body, Confidence, MemoryError, NewNote, NoteId, NoteKind,
+    NotePatch, ProjectName, RunId, Scope, Status, Title, invalid, now, seconds_from_now,
 };
 use super::notes;
 use super::tasks::{DEFAULT_BUDGET_CHARS, MAX_BUDGET_CHARS, MIN_BUDGET_CHARS, SUBTREE, truncated};
 
 const MAX_ITEMS_PER_NOTE: i64 = 100;
-const MAX_BASIS_CHARS: usize = 500;
 const MAX_SUMMARY_TITLE_CHARS: usize = 180;
 const LISTED: i64 = 20;
 const SECTION_ROWS: i64 = 200;
@@ -23,12 +21,6 @@ const DEFAULT_STALE_DAYS: u32 = 14;
 const MAX_STALE_DAYS: u32 = 365;
 
 type Result<T> = std::result::Result<T, MemoryError>;
-
-fn internal(error: serde_json::Error) -> MemoryError {
-    MemoryError::Internal(error.into())
-}
-
-// ---------------------------------------------------------------- checklists
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,8 +165,6 @@ pub fn open_items(conn: &Connection, task: NoteId) -> Result<Value> {
     Ok(json!({ "done": done, "total": total, "open": open }))
 }
 
-// ----------------------------------------------------------------- summaries
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Summarize {
@@ -183,6 +173,10 @@ pub struct Summarize {
     pub result: Body,
     // Everything done, failures included, in brief.
     pub work: Body,
+    // What the task ends as; `done` unless said otherwise.
+    pub status: Option<Status>,
+    pub confidence: Option<Confidence>,
+    pub basis: Option<Basis>,
     pub author: Option<Author>,
     pub run: Option<RunId>,
 }
@@ -197,7 +191,26 @@ fn summary_id(conn: &Connection, task: NoteId) -> Result<Option<NoteId>> {
         .optional()?)
 }
 
-// Writes or replaces the summary of a task; the old text stays as a revision.
+fn patch(id: NoteId, author: Option<Author>, run: Option<RunId>) -> NotePatch {
+    NotePatch {
+        id,
+        title: None,
+        body: None,
+        status: None,
+        tags: None,
+        parent: None,
+        append: None,
+        entity: None,
+        author,
+        run,
+        expected_revision: None,
+        confidence: None,
+        basis: None,
+    }
+}
+
+// Writes or replaces the summary of a task and closes the task. The old
+// summary text stays as a revision.
 pub fn summarize(
     conn: &mut Connection,
     input: Summarize,
@@ -209,6 +222,10 @@ pub fn summarize(
             "note {} is a {}; a summary closes a goal or a step",
             task.id, task.kind
         )));
+    }
+    let closed_as = input.status.unwrap_or(Status::Done);
+    if !matches!(closed_as, Status::Done | Status::Failed | Status::Dropped) {
+        return Err(invalid("status must be done, failed or dropped"));
     }
     if input.result.as_str().trim().is_empty() || input.work.as_str().trim().is_empty() {
         return Err(invalid("result and work must not be empty"));
@@ -222,20 +239,13 @@ pub fn summarize(
 
     let (note, created) = match summary_id(conn, task.id)? {
         Some(id) => {
-            let patch = NotePatch {
-                id,
-                title: None,
+            let change = NotePatch {
                 body: Some(body),
-                status: None,
-                tags: None,
-                parent: None,
-                append: None,
-                entity: None,
-                author: input.author,
-                run: input.run,
-                expected_revision: None,
+                confidence: input.confidence,
+                basis: input.basis,
+                ..patch(id, input.author.clone(), input.run.clone())
             };
-            (notes::update(conn, patch)?, false)
+            (notes::update(conn, change)?, false)
         }
         None => {
             let short: String = task.title.chars().take(MAX_SUMMARY_TITLE_CHARS).collect();
@@ -249,22 +259,37 @@ pub fn summarize(
                 project: None,
                 links: Default::default(),
                 entity: None,
-                author: input.author,
-                run: input.run,
+                author: input.author.clone(),
+                run: input.run.clone(),
                 task: None,
+                confidence: input.confidence,
+                basis: input.basis,
             };
-            let note = notes::create(conn, new, default_project)?.note;
+            let mut note = notes::create(conn, new, default_project)?.note;
             conn.execute("UPDATE notes SET summary = 1 WHERE id = ?1", [note.id])?;
+            note.summary = true;
             (note, true)
         }
     };
+    if task.status != closed_as {
+        let close = NotePatch {
+            status: Some(closed_as),
+            ..patch(task.id, input.author, input.run)
+        };
+        notes::update(conn, close)?;
+    }
 
-    // Finished sub-tasks without a summary.
-    let missing = unsummarized(conn, Some(task.id), None, LISTED)?;
-    let mut reply = serde_json::to_value(&note).map_err(internal)?;
-    reply["summary"] = json!(true);
+    let mut reply = serde_json::to_value(&note).map_err(|e| MemoryError::Internal(e.into()))?;
     reply["created"] = json!(created);
-    reply["task"] = json!(task.id);
+    reply["task"] = json!({ "id": task.id, "status": closed_as });
+    let open = open_items(conn, task.id)?;
+    if open["open"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+    {
+        reply["checklist_left_open"] = open["open"].clone();
+    }
+    let missing = unsummarized(conn, Some(task.id), None, LISTED)?;
     if !missing.is_empty() {
         reply["parts_without_summary"] = Value::from(missing);
     }
@@ -303,21 +328,43 @@ fn unsummarized(
         .collect::<rusqlite::Result<_>>()?)
 }
 
-fn summary_value(
+// One summary as the reader sees it: text, and how far it was trusted.
+struct SummaryRow {
     id: Option<NoteId>,
     body: Option<String>,
-    at: Option<String>,
-    max: usize,
-) -> Value {
-    let (Some(id), Some(body)) = (id, body) else {
-        return Value::Null;
-    };
-    let (text, cut) = truncated(&body, max);
-    let mut value = json!({ "id": id, "text": text, "updated_at": at });
-    if cut {
-        value["truncated"] = json!(true);
+    updated_at: Option<String>,
+    confidence: Option<f64>,
+    basis: Option<String>,
+}
+
+impl SummaryRow {
+    fn read(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(first)?,
+            body: row.get(first + 1)?,
+            updated_at: row.get(first + 2)?,
+            confidence: row.get(first + 3)?,
+            basis: row.get(first + 4)?,
+        })
     }
-    value
+
+    fn shown(self, max_chars: usize) -> Value {
+        let (Some(id), Some(body)) = (self.id, self.body) else {
+            return Value::Null;
+        };
+        let (text, cut) = truncated(&body, max_chars);
+        let mut value = json!({ "id": id, "text": text, "updated_at": self.updated_at });
+        if cut {
+            value["truncated"] = json!(true);
+        }
+        if let Some(confidence) = self.confidence {
+            value["confidence"] = json!(confidence);
+        }
+        if let Some(basis) = self.basis {
+            value["basis"] = json!(basis);
+        }
+        value
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,15 +386,13 @@ pub fn task_summary(conn: &Connection, query: &TaskSummaryQuery) -> Result<Value
 
     let own = conn
         .query_row(
-            "SELECT id, body, updated_at FROM notes WHERE parent_id = ?1 AND summary = 1",
+            "SELECT id, body, updated_at, confidence, basis FROM notes
+             WHERE parent_id = ?1 AND summary = 1",
             [task.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| SummaryRow::read(row, 0),
         )
-        .optional()?;
-    let own = match own {
-        Some((id, body, at)) => summary_value(Some(id), Some(body), Some(at), limit / 2),
-        None => Value::Null,
-    };
+        .optional()?
+        .map_or(Value::Null, |summary| summary.shown(limit / 2));
     let mut used = own.to_string().chars().count();
 
     // Zero padded path sorts rows in depth first order.
@@ -361,7 +406,7 @@ pub fn task_summary(conn: &Connection, query: &TaskSummaryQuery) -> Result<Value
                  WHERE c.kind IN ('goal', 'step')
              )
              SELECT n.id, n.kind, n.status, n.title, n.parent_id, tree.depth,
-                    s.id, s.body, s.updated_at
+                    s.id, s.body, s.updated_at, s.confidence, s.basis
              FROM tree JOIN notes n ON n.id = tree.id
              LEFT JOIN notes s ON s.parent_id = n.id AND s.summary = 1
              WHERE tree.depth > 0
@@ -375,7 +420,7 @@ pub fn task_summary(conn: &Connection, query: &TaskSummaryQuery) -> Result<Value
                 "title": row.get::<_, String>(3)?,
                 "parent": row.get::<_, Option<i64>>(4)?,
                 "depth": row.get::<_, i64>(5)?,
-                "summary": summary_value(row.get(6)?, row.get(7)?, row.get(8)?, limit / 4),
+                "summary": SummaryRow::read(row, 6)?.shown(limit / 4),
             }))
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -413,202 +458,81 @@ pub fn task_summary(conn: &Connection, query: &TaskSummaryQuery) -> Result<Value
     }))
 }
 
-// --------------------------------------------------------------- assessments
-
-validated_string!(
-    // One or two sentences on what a confidence rests on.
-    Basis,
-    validate_basis
-);
-
-fn validate_basis(value: String) -> std::result::Result<String, String> {
-    let basis = value.trim();
-    if basis.is_empty() || basis.chars().count() > MAX_BASIS_CHARS {
-        return Err(format!("basis must be 1-{MAX_BASIS_CHARS} characters"));
-    }
-    if basis.chars().any(char::is_control) {
-        return Err("basis must be a single line without control characters".into());
-    }
-    Ok(basis.to_string())
-}
-
-#[derive(Debug, Default)]
-pub struct Assessment {
-    pub confidence: Option<Confidence>,
-    pub basis: Option<Basis>,
-}
-
-// Takes `confidence` and `basis` out of the arguments; None when absent.
-pub fn take_assessment(args: &mut Value) -> Result<Option<Assessment>> {
-    let Some(fields) = args.as_object_mut() else {
-        return Ok(None);
-    };
-    let mut take = |name: &str| fields.remove(name).filter(|value| !value.is_null());
-    let (confidence, basis) = (take("confidence"), take("basis"));
-    if confidence.is_none() && basis.is_none() {
-        return Ok(None);
-    }
-    let parsed = |problem: serde_json::Error| invalid(problem.to_string());
-    Ok(Some(Assessment {
-        confidence: confidence
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(parsed)?,
-        basis: basis
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(parsed)?,
-    }))
-}
-
-fn record_key(record: RecordType, id: &RecordId) -> Result<String> {
-    match (record, id) {
-        (RecordType::Note, RecordId::Number(number)) => Ok(number.to_string()),
-        (RecordType::Concept, RecordId::Uuid(uuid)) => Ok(uuid.to_string()),
-        (RecordType::Note, _) => Err(invalid("a note id is an integer")),
-        (RecordType::Concept, _) => Err(invalid("a concept id is a UUID string")),
-        (other, _) => Err(invalid(format!(
-            "a {other} carries no confidence; use a note or a concept"
-        ))),
-    }
-}
-
-// Confidence, its basis and the last check of one record, or null.
-pub fn assessment_of(conn: &Connection, record: RecordType, id: &str) -> Result<Value> {
-    Ok(conn
-        .query_row(
-            "SELECT confidence, basis, verified_at, verified_by FROM assessments
-             WHERE record_type = ?1 AND record_id = ?2",
-            params![record, id],
-            |row| {
-                Ok(json!({
-                    "confidence": row.get::<_, Option<f64>>(0)?,
-                    "basis": row.get::<_, Option<String>>(1)?,
-                    "verified_at": row.get::<_, Option<String>>(2)?,
-                    "verified_by": row.get::<_, Option<String>>(3)?,
-                }))
-            },
-        )
-        .optional()?
-        .unwrap_or(Value::Null))
-}
-
-// Marks the record as checked now. Fields not given keep their value.
-pub fn assess(
-    conn: &mut Connection,
-    record: RecordType,
-    id: &str,
-    assessment: &Assessment,
-    who: &Attribution,
-) -> Result<Value> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let table = match record {
-        RecordType::Note => "SELECT project FROM notes WHERE id = CAST(?1 AS INTEGER)",
-        RecordType::Concept => "SELECT project FROM concepts WHERE id = ?1",
-        other => {
-            return Err(invalid(format!(
-                "a {other} carries no confidence; use a note or a concept"
-            )));
-        }
-    };
-    let project: String = tx
-        .query_row(table, [id], |row| row.get(0))
-        .optional()?
-        .ok_or_else(|| MemoryError::NotFound(format!("{record} {id}")))?;
-
-    tx.execute(
-        "INSERT INTO assessments (record_type, record_id, confidence, basis, verified_at, verified_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (record_type, record_id) DO UPDATE SET
-             confidence = coalesce(excluded.confidence, confidence),
-             basis = coalesce(excluded.basis, basis),
-             verified_at = excluded.verified_at,
-             verified_by = excluded.verified_by",
-        params![
-            record,
-            id,
-            assessment.confidence.map(Confidence::value),
-            assessment.basis.as_ref().map(Basis::as_str),
-            now(),
-            who.author,
-        ],
-    )?;
-    let mut fields = vec!["verified"];
-    if assessment.confidence.is_some() {
-        fields.push("confidence");
-    }
-    if assessment.basis.is_some() {
-        fields.push("basis");
-    }
-    journal::record(
-        &tx,
-        Entry::new(&project, record, id, Op::Updated, who).fields(fields),
-    )?;
-    let saved = assessment_of(&tx, record, id)?;
-    tx.commit()?;
-    Ok(saved)
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Confirm {
-    #[serde(rename = "type")]
-    pub record: RecordType,
-    pub id: RecordId,
+    pub id: NoteId,
     pub confidence: Option<Confidence>,
     pub basis: Option<Basis>,
     pub author: Option<Author>,
     pub run: Option<RunId>,
 }
 
-// Marks a note or concept as checked again and found to hold.
+// Marks a note as checked again now and found to hold. This is the only
+// way `verified_at` is set. A new confidence or basis makes a new revision,
+// so the earlier values stay readable.
 pub fn confirm(conn: &mut Connection, request: Confirm) -> Result<Value> {
-    let id = record_key(request.record, &request.id)?;
-    let assessment = Assessment {
-        confidence: request.confidence,
-        basis: request.basis,
-    };
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current = notes::load(&tx, request.id)?;
     let who = Attribution::new(request.author, request.run, None);
-    let mut saved = assess(conn, request.record, &id, &assessment, &who)?;
-    saved["type"] = json!(request.record);
-    saved["id"] = match request.id {
-        RecordId::Number(number) => json!(number),
-        RecordId::Uuid(uuid) => json!(uuid.to_string()),
-    };
-    Ok(saved)
-}
+    let confidence = request
+        .confidence
+        .map(Confidence::value)
+        .or(current.confidence);
+    let basis = request
+        .basis
+        .map(String::from)
+        .or_else(|| current.basis.clone());
 
-// Adds confidence, last check and the summary mark to search results.
-pub fn annotate(conn: &Connection, results: &mut [Value]) -> Result<()> {
-    for result in results {
-        let (record, id) = match (result["source"].as_str(), &result["id"]) {
-            (Some("note"), Value::Number(id)) => (RecordType::Note, id.to_string()),
-            (Some("concept"), Value::String(id)) => (RecordType::Concept, id.clone()),
-            _ => continue,
-        };
-        let assessment = assessment_of(conn, record, &id)?;
-        for field in ["confidence", "verified_at"] {
-            if !assessment[field].is_null() {
-                result[field] = assessment[field].clone();
-            }
-        }
-        if record == RecordType::Note {
-            let summary: Option<bool> = conn
-                .query_row(
-                    "SELECT summary FROM notes WHERE id = CAST(?1 AS INTEGER)",
-                    [&id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if summary == Some(true) {
-                result["summary"] = json!(true);
-            }
-        }
+    let mut fields = vec!["verified"];
+    if confidence != current.confidence {
+        fields.push("confidence");
     }
-    Ok(())
+    if basis != current.basis {
+        fields.push("basis");
+    }
+    let revised = fields.len() > 1;
+    let revision = current.revision + i64::from(revised);
+    tx.execute(
+        "UPDATE notes SET confidence = ?2, basis = ?3, verified_at = ?4, verified_by = ?5,
+                          revision = ?6
+         WHERE id = ?1",
+        params![current.id, confidence, basis, now(), who.author, revision],
+    )?;
+    if revised {
+        journal::save_note_revision(
+            &tx,
+            &NoteState {
+                id: current.id,
+                revision,
+                status: current.status.as_str(),
+                title: &current.title,
+                body: &current.body,
+                tags: &current.tags.join(" "),
+                parent: current.parent,
+                entity: current.entity,
+                confidence,
+                basis: basis.as_deref(),
+            },
+            &who,
+        )?;
+    }
+    journal::record(
+        &tx,
+        Entry::new(
+            &current.project,
+            RecordType::Note,
+            current.id,
+            Op::Updated,
+            &who,
+        )
+        .revision(revision)
+        .fields(fields),
+    )?;
+    let note = notes::load(&tx, current.id)?;
+    tx.commit()?;
+    serde_json::to_value(&note).map_err(|e| MemoryError::Internal(e.into()))
 }
-
-// -------------------------------------------------------------------- review
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -625,24 +549,28 @@ fn listed(conn: &Connection, filter: &str, project: Option<&str>, cutoff: &str) 
     )?;
     let oldest: Vec<Value> = conn
         .prepare(&format!(
-            "SELECT n.id, n.kind, n.status, n.title, n.updated_at FROM notes n
+            "SELECT n.id, n.kind, n.status, n.title, n.updated_at, n.confidence FROM notes n
              WHERE (?1 IS NULL OR n.project = ?1) AND {filter}
              ORDER BY n.updated_at, n.id LIMIT ?3"
         ))?
         .query_map(params![project, cutoff, LISTED], |row| {
-            Ok(json!({
+            let mut note = json!({
                 "id": row.get::<_, i64>(0)?,
                 "kind": row.get::<_, String>(1)?,
                 "status": row.get::<_, String>(2)?,
                 "title": row.get::<_, String>(3)?,
                 "updated_at": row.get::<_, String>(4)?,
-            }))
+            });
+            if let Some(confidence) = row.get::<_, Option<f64>>(5)? {
+                note["confidence"] = json!(confidence);
+            }
+            Ok(note)
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(json!({ "total": total, "oldest": oldest }))
 }
 
-// What in a project needs attention. Reads only; it changes nothing.
+// What in a project needs attention. Reads only.
 pub fn review(conn: &Connection, query: &ReviewQuery, default_scope: &Scope) -> Result<Value> {
     let days = query.stale_days.unwrap_or(DEFAULT_STALE_DAYS);
     if !(1..=MAX_STALE_DAYS).contains(&days) {
@@ -652,26 +580,7 @@ pub fn review(conn: &Connection, query: &ReviewQuery, default_scope: &Scope) -> 
     }
     let project = query.project.as_ref().unwrap_or(default_scope).project();
     let cutoff = seconds_from_now(-i64::from(days) * 86_400);
-    let at = now();
-
-    let stalled = listed(
-        conn,
-        "n.kind IN ('goal', 'step') AND n.status IN ('open', 'active') AND n.updated_at < ?2",
-        project,
-        &cutoff,
-    )?;
-    let questions = listed(
-        conn,
-        "n.kind = 'question' AND n.status = 'open' AND ?2 IS NOT NULL",
-        project,
-        &cutoff,
-    )?;
-    let loose = listed(
-        conn,
-        "n.parent_id IS NULL AND n.kind <> 'goal' AND n.updated_at < ?2",
-        project,
-        &cutoff,
-    )?;
+    let section = |filter: &str| listed(conn, filter, project, &cutoff);
 
     let (open_items, done_items): (i64, i64) = conn.query_row(
         "SELECT coalesce(sum(1 - i.done), 0), coalesce(sum(i.done), 0)
@@ -683,31 +592,22 @@ pub fn review(conn: &Connection, query: &ReviewQuery, default_scope: &Scope) -> 
     let (held, lapsed): (i64, i64) = conn.query_row(
         "SELECT coalesce(sum(claim_expires_at > ?2), 0), coalesce(sum(claim_expires_at <= ?2), 0)
          FROM entities WHERE claim_id IS NOT NULL AND (?1 IS NULL OR project = ?1)",
-        params![project, at],
+        params![project, now()],
         |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    let doubtful: i64 = conn.query_row(
-        "SELECT count(*) FROM assessments a
-         LEFT JOIN notes n ON a.record_type = 'note' AND n.id = CAST(a.record_id AS INTEGER)
-         LEFT JOIN concepts c ON a.record_type = 'concept' AND c.id = a.record_id
-         WHERE a.confidence < 0.5 AND (?1 IS NULL OR coalesce(n.project, c.project) = ?1)",
-        [project],
-        |row| row.get(0),
-    )?;
-    let unchecked: i64 = conn.query_row(
-        "SELECT count(*) FROM concepts c
-         WHERE (?1 IS NULL OR c.project = ?1) AND c.archived = 0
-           AND NOT EXISTS (SELECT 1 FROM assessments a
-                           WHERE a.record_type = 'concept' AND a.record_id = c.id
-                             AND a.verified_at >= ?2)",
-        params![project, cutoff],
-        |row| row.get(0),
     )?;
 
     let mut report = Map::new();
     report.insert("stale_days".into(), json!(days));
-    report.insert("stalled_tasks".into(), stalled);
-    report.insert("open_questions".into(), questions);
+    report.insert(
+        "stalled_tasks".into(),
+        section(
+            "n.kind IN ('goal', 'step') AND n.status IN ('open', 'active') AND n.updated_at < ?2",
+        )?,
+    );
+    report.insert(
+        "open_questions".into(),
+        section("n.kind = 'question' AND n.status = 'open' AND ?2 IS NOT NULL")?,
+    );
     report.insert(
         "closed_without_summary".into(),
         Value::from(unsummarized(conn, None, project, LISTED)?),
@@ -716,12 +616,24 @@ pub fn review(conn: &Connection, query: &ReviewQuery, default_scope: &Scope) -> 
         "checklists".into(),
         json!({ "open": open_items, "done": done_items }),
     );
-    report.insert("notes_outside_any_task".into(), loose);
+    report.insert(
+        "notes_outside_any_task".into(),
+        section("n.parent_id IS NULL AND n.kind NOT IN ('goal', 'lesson') AND n.updated_at < ?2")?,
+    );
+    report.insert(
+        "low_confidence".into(),
+        section("n.confidence < 0.5 AND n.status <> 'dropped' AND ?2 IS NOT NULL")?,
+    );
+    report.insert(
+        "lessons_not_confirmed_lately".into(),
+        section(
+            "n.kind = 'lesson' AND n.status = 'active'
+             AND coalesce(n.verified_at, n.created_at) < ?2",
+        )?,
+    );
     report.insert(
         "claims".into(),
         json!({ "held": held, "expired_not_released": lapsed }),
     );
-    report.insert("records_with_confidence_below_half".into(), json!(doubtful));
-    report.insert("concepts_not_checked_lately".into(), json!(unchecked));
     Ok(Value::Object(report))
 }

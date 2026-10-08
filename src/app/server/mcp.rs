@@ -59,7 +59,11 @@ impl ServerHandler for McpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult::with_all_items(
-            Tool::ALL.iter().map(|tool| definition(*tool)).collect(),
+            Tool::ALL
+                .iter()
+                .filter(|tool| self.brain.all_tools || tool.is_core())
+                .map(|tool| definition(*tool))
+                .collect(),
         ))
     }
 

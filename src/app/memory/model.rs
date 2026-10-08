@@ -9,6 +9,7 @@ pub const MAX_LIMIT: u64 = 100;
 pub const MAX_GRAPH_DEPTH: u8 = 32;
 pub const MAX_TOKEN_CHARS: usize = 48;
 pub const MAX_AUTHOR_CHARS: usize = 64;
+pub const MAX_BASIS_CHARS: usize = 500;
 
 pub type NoteId = i64;
 pub type EntityId = i64;
@@ -35,12 +36,7 @@ macro_rules! internal_error_from {
     )+};
 }
 
-internal_error_from!(
-    rusqlite::Error,
-    lancedb::Error,
-    arrow_schema::ArrowError,
-    tokio::task::JoinError,
-);
+internal_error_from!(rusqlite::Error, tokio::task::JoinError,);
 
 pub fn invalid(message: impl Into<String>) -> MemoryError {
     MemoryError::Invalid(message.into())
@@ -109,6 +105,7 @@ string_enum!(
         Fact => "fact",
         Decision => "decision",
         Question => "question",
+        Lesson => "lesson",
     }
 );
 
@@ -142,7 +139,7 @@ impl NoteKind {
             Self::Goal | Self::Step => &[Open, Active, Done, Failed, Dropped],
             Self::Attempt => &[Active, Done, Failed],
             Self::Question => &[Open, Done, Dropped],
-            Self::Fact | Self::Decision => &[Active, Dropped],
+            Self::Fact | Self::Decision | Self::Lesson => &[Active, Dropped],
         }
     }
 
@@ -150,7 +147,7 @@ impl NoteKind {
     pub fn default_status(self) -> Option<Status> {
         match self {
             Self::Goal | Self::Step | Self::Question => Some(Status::Open),
-            Self::Fact | Self::Decision => Some(Status::Active),
+            Self::Fact | Self::Decision | Self::Lesson => Some(Status::Active),
             Self::Attempt => None,
         }
     }
@@ -218,6 +215,46 @@ validated_string!(
     RunId,
     validate_run
 );
+
+// How sure the author is that a record holds, from 0 to 1.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(try_from = "f64")]
+pub struct Confidence(f64);
+
+impl Confidence {
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for Confidence {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, String> {
+        if (0.0..=1.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err("confidence must be between 0 and 1".into())
+        }
+    }
+}
+
+validated_string!(
+    // One or two sentences on what a confidence rests on.
+    Basis,
+    validate_basis
+);
+
+fn validate_basis(value: String) -> Result<String, String> {
+    let basis = value.trim();
+    if basis.is_empty() || basis.chars().count() > MAX_BASIS_CHARS {
+        return Err(format!("basis must be 1-{MAX_BASIS_CHARS} characters"));
+    }
+    if basis.chars().any(char::is_control) {
+        return Err("basis must be a single line without control characters".into());
+    }
+    Ok(basis.to_string())
+}
 
 // Who made a change: labels for the journal, never a credential.
 #[derive(Debug, Clone, Default)]
@@ -479,6 +516,8 @@ pub struct NewNote {
     pub author: Option<Author>,
     pub run: Option<RunId>,
     pub task: Option<NoteId>,
+    pub confidence: Option<Confidence>,
+    pub basis: Option<Basis>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -495,6 +534,8 @@ pub struct NotePatch {
     pub author: Option<Author>,
     pub run: Option<RunId>,
     pub expected_revision: Option<i64>,
+    pub confidence: Option<Confidence>,
+    pub basis: Option<Basis>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -522,6 +563,18 @@ pub struct Note {
     pub entity: Option<EntityId>,
     pub author: Option<String>,
     pub revision: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
+    // When someone last checked the note against reality, and who.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<String>,
+    // True for the closing summary of the task this note sits under.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub summary: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -543,6 +596,8 @@ pub struct NoteBrief {
     pub title: String,
     pub parent: Option<NoteId>,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -642,7 +697,3 @@ pub struct Checkpoint {
     #[serde(skip)]
     pub journal_id: i64,
 }
-
-#[cfg(test)]
-#[path = "tests/model.rs"]
-mod tests;

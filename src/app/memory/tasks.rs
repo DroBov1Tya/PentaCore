@@ -82,7 +82,7 @@ fn with_previews(conn: &Connection, task: NoteId, filter: &str) -> Result<Vec<Wi
         .query_map(params![task, SECTION_ROWS, PREVIEW_CHARS as i64], |row| {
             Ok(WithPreview {
                 note: brief_from_row(row)?,
-                preview: row.get(7)?,
+                preview: row.get(8)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
@@ -101,7 +101,7 @@ fn blocked_steps(conn: &Connection, task: NoteId) -> Result<Vec<BlockedStep>> {
              GROUP BY n.id ORDER BY n.id LIMIT ?2"
         ))?
         .query_map(params![task, SECTION_ROWS], |row| {
-            Ok((brief_from_row(row)?, row.get(7)?))
+            Ok((brief_from_row(row)?, row.get(8)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows

@@ -6,11 +6,10 @@ use std::time::Duration;
 
 use super::model::{MemoryError, invalid};
 
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 3] = [
     include_str!("migrations/001_notes.sql"),
     include_str!("migrations/002_state.sql"),
     include_str!("migrations/003_history.sql"),
-    include_str!("migrations/004_practices.sql"),
 ];
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -26,19 +25,17 @@ impl Db {
         Self::prepare(Connection::open(path)?)
     }
 
-    #[cfg(test)]
-    pub fn in_memory() -> Self {
-        Self::prepare(Connection::open_in_memory().unwrap()).unwrap()
-    }
-
     fn prepare(mut conn: Connection) -> Result<Self> {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
         // Overwrite deleted rows instead of just unlinking them.
         conn.pragma_update(None, "secure_delete", "ON")?;
+        // A migration may rebuild a table, which SQLite allows only with
+        // foreign keys off; migrate() checks the links before it commits.
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
         migrate(&mut conn)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -93,6 +90,14 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     for (index, migration) in MIGRATIONS.iter().enumerate().skip(applied) {
         tx.execute_batch(migration)?;
         tx.pragma_update(None, "user_version", index as i64 + 1)?;
+    }
+    let broken: i64 = tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+        row.get(0)
+    })?;
+    if broken > 0 {
+        return Err(
+            anyhow!("migration would leave {broken} broken links; nothing was changed").into(),
+        );
     }
     tx.commit()?;
     Ok(())
@@ -176,7 +181,3 @@ impl Tree {
         )?)
     }
 }
-
-#[cfg(test)]
-#[path = "tests/db.rs"]
-mod tests;

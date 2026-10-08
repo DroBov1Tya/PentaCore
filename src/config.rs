@@ -49,6 +49,8 @@ pub struct Config {
     pub home: PathBuf,
     pub default_project: ProjectName,
     pub http: Option<HttpConfig>,
+    // List every tool to the agent, not only the everyday ones.
+    pub all_tools: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +97,16 @@ impl Config {
             home: home_dir()?,
             default_project: default_project()?,
             http: http_config(env("PENTACORE_HTTP_ADDR"), env("PENTACORE_HTTP_TOKEN"))?,
+            all_tools: all_tools(env("PENTACORE_TOOLS"))?,
         })
+    }
+}
+
+fn all_tools(value: Option<String>) -> Result<bool> {
+    match value.as_deref() {
+        None | Some("core") => Ok(false),
+        Some("full") => Ok(true),
+        Some(other) => anyhow::bail!("PENTACORE_TOOLS must be `core` or `full`, not `{other}`"),
     }
 }
 
@@ -173,4 +184,3 @@ fn http_config(addr: Option<String>, token: Option<String>) -> Result<Option<Htt
         token: Token::try_from(token)?,
     }))
 }
-

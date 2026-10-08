@@ -1,16 +1,15 @@
-// One search over notes, entities and concepts. Order is by relevance: word
-// coverage or closeness in meaning, either one enough. Dropped or superseded
-// records are scaled down; freshness and task membership add a little.
-// Repeats are folded under the best one; nothing is deleted.
+// One search over notes and entities. Order is by relevance: word coverage
+// or closeness in meaning, either one enough. Dropped or superseded notes are
+// scaled down; freshness and task membership add a little. Repeats are folded
+// under the best one; nothing is deleted.
 
 use rusqlite::{Connection, params};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
-use super::index::Neighbor;
-use super::journal::RecordType;
-use super::model::{Limit, MemoryError, NoteId, Scope, SearchText, invalid};
+use super::index::{Neighbor, cosine};
+use super::model::{Limit, MemoryError, NoteId, NoteKind, Scope, SearchText, invalid};
 use super::words::{self, Query, Store};
 
 const DEFAULT_LIMIT: usize = 8;
@@ -44,6 +43,8 @@ const SAME_MEANING_SHARED_WORDS: f32 = 0.35;
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
+pub type Vectors = HashMap<NoteId, Vec<f32>>;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecallQuery {
@@ -51,16 +52,14 @@ pub struct RecallQuery {
     pub project: Option<Scope>,
     pub limit: Option<Limit>,
     pub task: Option<NoteId>,
-    pub only: Option<RecordType>,
-    #[serde(default)]
-    pub include_archived: bool,
+    // Only notes of this kind; entities are then left out.
+    pub kind: Option<NoteKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Source {
     Note,
     Entity,
-    Concept,
 }
 
 impl Source {
@@ -68,23 +67,6 @@ impl Source {
         match self {
             Self::Note => "note",
             Self::Entity => "entity",
-            Self::Concept => "concept",
-        }
-    }
-
-    fn record_type(self) -> RecordType {
-        match self {
-            Self::Note => RecordType::Note,
-            Self::Entity => RecordType::Entity,
-            Self::Concept => RecordType::Concept,
-        }
-    }
-
-    fn store(self) -> Store {
-        match self {
-            Self::Note => Store::Notes,
-            Self::Entity => Store::Entities,
-            Self::Concept => Store::Concepts,
         }
     }
 }
@@ -98,7 +80,7 @@ struct Validity {
 
 struct Item {
     source: Source,
-    id: String,
+    id: i64,
     title: String,
     text: String,
     updated_at: String,
@@ -118,7 +100,7 @@ struct Item {
 }
 
 // The stronger evidence plus a share of the weaker one; 0 to about 1.25.
-pub fn relevance(words: f32, similarity: Option<f32>) -> f32 {
+fn relevance(words: f32, similarity: Option<f32>) -> f32 {
     let meaning = similarity.map_or(0.0, |similarity| {
         ((similarity - SIMILARITY_FLOOR) / (SIMILARITY_CEILING - SIMILARITY_FLOOR)).clamp(0.0, 1.0)
     });
@@ -144,8 +126,8 @@ fn age_days(updated_at: &str, now: chrono::DateTime<chrono::Utc>) -> f32 {
     })
 }
 
-fn ids_json<'a>(ids: impl Iterator<Item = &'a String>) -> String {
-    Value::from(ids.cloned().collect::<Vec<_>>()).to_string()
+fn ids_json(ids: &[i64]) -> String {
+    Value::from(ids.to_vec()).to_string()
 }
 
 const SUBTREE: &str = "\
@@ -160,7 +142,14 @@ fn first_chars(text: &str, count: usize) -> String {
     text.chars().take(count).collect()
 }
 
-fn blank(source: Source, id: String, title: String, text: String, updated_at: String) -> Item {
+fn fields(value: Value) -> Map<String, Value> {
+    match value {
+        Value::Object(fields) => fields,
+        _ => Map::new(),
+    }
+}
+
+fn blank(source: Source, id: i64, title: String, text: String, updated_at: String) -> Item {
     Item {
         source,
         id,
@@ -184,17 +173,19 @@ fn blank(source: Source, id: String, title: String, text: String, updated_at: St
 fn load_notes(
     conn: &Connection,
     ids: &str,
-    task: Option<NoteId>,
+    args: &RecallQuery,
     query: &Query,
 ) -> Result<Vec<Item>> {
     let mut items: Vec<Item> = conn
         .prepare(&format!(
             "SELECT n.id, n.project, n.kind, n.status, n.title, n.parent_id, n.updated_at,
                     substr(n.body, 1, 8000), n.tags,
-                    ?2 IS NOT NULL AND n.id IN ({SUBTREE})
-             FROM notes n WHERE n.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?1))"
+                    ?2 IS NOT NULL AND n.id IN ({SUBTREE}),
+                    n.confidence, n.basis, n.verified_at, n.summary
+             FROM notes n
+             WHERE n.id IN (SELECT value FROM json_each(?1)) AND (?3 IS NULL OR n.kind = ?3)"
         ))?
-        .query_map(params![ids, task], |row| {
+        .query_map(params![ids, args.task, args.kind], |row| {
             let id: i64 = row.get(0)?;
             let (kind, status, title): (String, String, String) =
                 (row.get(2)?, row.get(3)?, row.get(4)?);
@@ -202,14 +193,14 @@ fn load_notes(
             let updated_at: String = row.get(6)?;
             let mut item = blank(
                 Source::Note,
-                id.to_string(),
+                id,
                 title.clone(),
                 format!("{body} {tags}"),
                 updated_at.clone(),
             );
             item.in_task = row.get(9)?;
             item.validity.dropped = status == "dropped";
-            item.shown = json!({
+            item.shown = fields(json!({
                 "id": id,
                 "project": row.get::<_, String>(1)?,
                 "kind": kind,
@@ -218,29 +209,46 @@ fn load_notes(
                 "parent": row.get::<_, Option<i64>>(5)?,
                 "updated_at": updated_at,
                 "snippet": snippet(&body, query),
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+            }));
+            // How far the author trusted this, read together with the text.
+            let trust: [(&str, Option<Value>); 3] = [
+                (
+                    "confidence",
+                    row.get::<_, Option<f64>>(10)?.map(Value::from),
+                ),
+                ("basis", row.get::<_, Option<String>>(11)?.map(Value::from)),
+                (
+                    "verified_at",
+                    row.get::<_, Option<String>>(12)?.map(Value::from),
+                ),
+            ];
+            for (name, value) in trust {
+                if let Some(value) = value {
+                    item.shown.insert(name.into(), value);
+                }
+            }
+            if row.get::<_, bool>(13)? {
+                item.shown.insert("summary".into(), json!(true));
+            }
             Ok(item)
         })?
         .collect::<rusqlite::Result<_>>()?;
 
     // A newer note that replaces or disputes this one.
-    let mut challenges = conn.prepare(
-        "SELECT e.dst, e.src, e.kind FROM edges e
-         JOIN notes s ON s.id = e.src
-         JOIN notes d ON d.id = e.dst
-         WHERE e.dst IN (SELECT CAST(value AS INTEGER) FROM json_each(?1))
-           AND s.status <> 'dropped'
-           AND (e.kind = 'supersedes' OR (e.kind = 'contradicts' AND s.created_at >= d.created_at))
-         ORDER BY e.src",
-    )?;
-    let challenges: Vec<(i64, i64, String)> = challenges
+    let challenges: Vec<(i64, i64, String)> = conn
+        .prepare(
+            "SELECT e.dst, e.src, e.kind FROM edges e
+             JOIN notes s ON s.id = e.src
+             JOIN notes d ON d.id = e.dst
+             WHERE e.dst IN (SELECT value FROM json_each(?1))
+               AND s.status <> 'dropped'
+               AND (e.kind = 'supersedes' OR (e.kind = 'contradicts' AND s.created_at >= d.created_at))
+             ORDER BY e.src",
+        )?
         .query_map([ids], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (target, challenger, kind) in challenges {
-        let Some(item) = items.iter_mut().find(|item| item.id == target.to_string()) else {
+        let Some(item) = items.iter_mut().find(|item| item.id == target) else {
             continue;
         };
         if kind == "supersedes" {
@@ -254,43 +262,6 @@ fn load_notes(
     Ok(items)
 }
 
-fn load_concepts(conn: &Connection, ids: &str, include_archived: bool) -> Result<Vec<Item>> {
-    Ok(conn
-        .prepare(
-            "SELECT c.id, c.project, c.title, substr(c.content, 1, 8000), c.tags, c.updated_at,
-                    c.archived
-             FROM concepts c
-             WHERE c.id IN (SELECT value FROM json_each(?1)) AND (?2 OR c.archived = 0)",
-        )?
-        .query_map(params![ids, include_archived], |row| {
-            let (id, title, content, tags): (String, String, String, String) =
-                (row.get(0)?, row.get(2)?, row.get(3)?, row.get(4)?);
-            let updated_at: String = row.get(5)?;
-            let archived: bool = row.get(6)?;
-            let mut item = blank(
-                Source::Concept,
-                id.clone(),
-                title.clone(),
-                format!("{content} {tags}"),
-                updated_at.clone(),
-            );
-            item.validity.dropped = archived;
-            let mut shown = json!({
-                "id": id,
-                "project": row.get::<_, String>(1)?,
-                "title": title,
-                "preview": first_chars(&content, PREVIEW_CHARS),
-                "updated_at": updated_at,
-            });
-            if archived {
-                shown["archived"] = json!(true);
-            }
-            item.shown = shown.as_object().cloned().unwrap_or_default();
-            Ok(item)
-        })?
-        .collect::<rusqlite::Result<_>>()?)
-}
-
 fn load_entities(conn: &Connection, ids: &str, task: Option<NoteId>) -> Result<Vec<Item>> {
     Ok(conn
         .prepare(&format!(
@@ -299,7 +270,7 @@ fn load_entities(conn: &Connection, ids: &str, task: Option<NoteId>) -> Result<V
                         SELECT 1 FROM notes t WHERE t.entity_id = e.id AND t.id IN ({SUBTREE})),
                     f.attrs
              FROM entities e JOIN entities_fts f ON f.rowid = e.id
-             WHERE e.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?1))"
+             WHERE e.id IN (SELECT value FROM json_each(?1))"
         ))?
         .query_map(params![ids, task], |row| {
             let id: i64 = row.get(0)?;
@@ -310,13 +281,13 @@ fn load_entities(conn: &Connection, ids: &str, task: Option<NoteId>) -> Result<V
             let title = format!("{kind} {key}");
             let mut item = blank(
                 Source::Entity,
-                id.to_string(),
+                id,
                 title.clone(),
                 format!("{status} {attr_words}"),
                 updated_at.clone(),
             );
             item.in_task = row.get(7)?;
-            item.shown = json!({
+            item.shown = fields(json!({
                 "id": id,
                 "project": row.get::<_, String>(1)?,
                 "type": kind,
@@ -325,10 +296,7 @@ fn load_entities(conn: &Connection, ids: &str, task: Option<NoteId>) -> Result<V
                 "title": title,
                 "preview": first_chars(&attrs, PREVIEW_CHARS),
                 "updated_at": updated_at,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+            }));
             Ok(item)
         })?
         .collect::<rusqlite::Result<_>>()?)
@@ -368,29 +336,14 @@ fn snippet(body: &str, query: &Query) -> String {
     )
 }
 
-pub type Vectors = HashMap<(RecordType, String), Vec<f32>>;
-
-impl Item {
-    fn record(&self) -> Option<(RecordType, String)> {
-        let record = match self.source {
-            Source::Note => RecordType::Note,
-            Source::Concept => RecordType::Concept,
-            Source::Entity => return None,
-        };
-        Some((record, self.id.clone()))
-    }
-}
-
 fn same_meaning(a: &Item, b: &Item, vectors: &Vectors) -> bool {
-    if !(a.latin && b.latin) {
+    if !(a.latin && b.latin && a.source == Source::Note && b.source == Source::Note) {
         return false;
     }
-    let vector = |item: &Item| item.record().and_then(|record| vectors.get(&record));
-    let (Some(a), Some(b)) = (vector(a), vector(b)) else {
-        return false;
-    };
-    // The model's vectors have unit length, so this is the cosine.
-    a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() >= SAME_MEANING
+    match (vectors.get(&a.id), vectors.get(&b.id)) {
+        (Some(a), Some(b)) => cosine(a, b) >= SAME_MEANING,
+        _ => false,
+    }
 }
 
 fn same_thing(a: &Item, b: &Item, vectors: &Vectors) -> bool {
@@ -407,15 +360,11 @@ fn without_repeats(ranked: Vec<Item>, vectors: &Vectors) -> Vec<Item> {
     let mut kept: Vec<Item> = Vec::new();
     for item in ranked {
         if item.source == Source::Note
-            && let Some(newer) = kept.iter_mut().find(|kept| {
-                kept.source == Source::Note
-                    && kept
-                        .id
-                        .parse()
-                        .is_ok_and(|id: NoteId| item.superseded_by.contains(&id))
-            })
+            && let Some(newer) = kept
+                .iter_mut()
+                .find(|kept| kept.source == Source::Note && item.superseded_by.contains(&kept.id))
         {
-            newer.supersedes.extend(item.id.parse::<NoteId>());
+            newer.supersedes.push(item.id);
             continue;
         }
         if let Some(original) = kept
@@ -424,7 +373,7 @@ fn without_repeats(ranked: Vec<Item>, vectors: &Vectors) -> Vec<Item> {
         {
             original
                 .duplicates
-                .push(json!({ "source": item.source.as_str(), "id": item.shown["id"] }));
+                .push(json!({ "source": item.source.as_str(), "id": item.id }));
             continue;
         }
         kept.push(item);
@@ -460,22 +409,6 @@ fn shown(item: Item) -> Value {
     Value::Object(result)
 }
 
-// What `find` would have called the best note match; kept for older clients.
-fn notes_matched(items: &[Item]) -> &'static str {
-    let best = items
-        .iter()
-        .filter(|item| item.source == Source::Note)
-        .map(|item| item.words)
-        .fold(0.0, f32::max);
-    if best >= 1.0 {
-        "all"
-    } else if best >= 0.8 {
-        "prefix"
-    } else {
-        "any"
-    }
-}
-
 // Ranks records against the query. `neighbors` is None without the model.
 pub fn rank(
     conn: &Connection,
@@ -489,54 +422,39 @@ pub fn rank(
         super::notes::load(conn, task)?;
     }
     let query = words::weighed(conn, args.query.as_str())?;
-    if args.only == Some(RecordType::Checkpoint) {
-        return Err(invalid("`only` must be note, entity or concept"));
-    }
     if query.is_empty() {
         return Err(invalid("query has no letters or digits to search for"));
     }
     let semantic = neighbors.is_some();
     let query_is_latin = words::mostly_latin(args.query.as_str());
+    let similarity: HashMap<NoteId, f32> = neighbors
+        .unwrap_or_default()
+        .into_iter()
+        .map(|neighbor| (neighbor.id, neighbor.similarity))
+        .collect();
 
-    let mut similarity: HashMap<(Source, String), f32> = HashMap::new();
-    for neighbor in neighbors.unwrap_or_default() {
-        let source = match neighbor.record {
-            RecordType::Note => Source::Note,
-            RecordType::Concept => Source::Concept,
-            _ => continue,
-        };
-        similarity.insert((source, neighbor.id), neighbor.similarity);
-    }
-
-    let mut items = Vec::new();
-    for source in [Source::Note, Source::Entity, Source::Concept] {
-        if args.only.is_some_and(|only| only != source.record_type()) {
-            continue;
+    let mut note_ids =
+        words::candidates(conn, Store::Notes, &query, project, CANDIDATES_PER_STORE)?;
+    for id in similarity.keys() {
+        if !note_ids.contains(id) {
+            note_ids.push(*id);
         }
-        let mut ids =
-            words::candidates(conn, source.store(), &query, project, CANDIDATES_PER_STORE)?;
-        ids.extend(
-            similarity
-                .keys()
-                .filter(|(of, id)| *of == source && !ids.contains(id))
-                .map(|(_, id)| id.clone())
-                .collect::<Vec<_>>(),
-        );
-        let ids = ids_json(ids.iter());
-        items.extend(match source {
-            Source::Note => load_notes(conn, &ids, args.task, &query)?,
-            Source::Entity => load_entities(conn, &ids, args.task)?,
-            Source::Concept => load_concepts(conn, &ids, args.include_archived)?,
-        });
+    }
+    let mut items = load_notes(conn, &ids_json(&note_ids), args, &query)?;
+    if args.kind.is_none() {
+        let ids = words::candidates(conn, Store::Entities, &query, project, CANDIDATES_PER_STORE)?;
+        items.extend(load_entities(conn, &ids_json(&ids), args.task)?);
     }
 
     let now = chrono::Utc::now();
     for item in &mut items {
         item.words = query.coverage(&item.title, &item.text);
-        item.meaning = similarity
-            .get(&(item.source, item.id.clone()))
-            .copied()
-            .filter(|_| query_is_latin && item.latin);
+        // The model is English-only: its verdict counts for Latin-script text.
+        item.meaning = match item.source {
+            Source::Note => similarity.get(&item.id).copied(),
+            Source::Entity => None,
+        }
+        .filter(|_| query_is_latin && item.latin);
         let relevance = relevance(item.words, item.meaning);
         item.score = if relevance < MIN_RELEVANCE {
             0.0
@@ -561,7 +479,6 @@ pub fn rank(
     // Enough to fill the page after repeats are folded away.
     items.truncate(limit * 4);
     Ok(Ranked {
-        matched: notes_matched(&items),
         items,
         limit,
         semantic,
@@ -572,18 +489,20 @@ pub fn rank(
 pub struct Ranked {
     items: Vec<Item>,
     limit: usize,
-    matched: &'static str,
     semantic: bool,
 }
 
 impl Ranked {
-    pub fn is_semantic(&self) -> bool {
-        self.semantic
-    }
-
-    // Records whose vectors help to tell a rewording from a different fact.
-    pub fn records(&self) -> Vec<(RecordType, String)> {
-        self.items.iter().filter_map(Item::record).collect()
+    // Notes whose vectors help to tell a rewording from a different fact.
+    pub fn notes(&self) -> Vec<NoteId> {
+        if !self.semantic {
+            return Vec::new();
+        }
+        self.items
+            .iter()
+            .filter(|item| item.source == Source::Note)
+            .map(|item| item.id)
+            .collect()
     }
 
     pub fn finish(self, vectors: &Vectors) -> Value {
@@ -591,13 +510,7 @@ impl Ranked {
         results.truncate(self.limit);
         json!({
             "results": results.into_iter().map(shown).collect::<Vec<_>>(),
-            "notes_matched": self.matched,
-            "concepts_available": self.semantic,
             "semantic": self.semantic,
         })
     }
 }
-
-#[cfg(test)]
-#[path = "tests/recall.rs"]
-mod tests;

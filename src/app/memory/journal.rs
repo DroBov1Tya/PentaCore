@@ -1,13 +1,12 @@
 // Journal of every change: record, op, field names, author, run, task. It
-// holds no record text, so entries outlive a purged record. Notes and concepts
-// also keep up to `REVISIONS_KEPT` full revisions.
+// holds no record text, so entries outlive a purged record. Notes also keep
+// up to `REVISIONS_KEPT` full revisions.
 
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, params_from_iter};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use super::concepts::ConceptId;
 use super::db::Db;
 use super::model::{
     Attribution, Author, Limit, MemoryError, NoteId, RunId, Scope, invalid, now, sql_text,
@@ -22,7 +21,6 @@ type Result<T> = std::result::Result<T, MemoryError>;
 string_enum!(RecordType {
     Note => "note",
     Entity => "entity",
-    Concept => "concept",
     Checkpoint => "checkpoint",
 });
 
@@ -35,8 +33,6 @@ string_enum!(Op {
     Released => "released",
     Linked => "linked",
     Unlinked => "unlinked",
-    Archived => "archived",
-    Restored => "restored",
     Redacted => "redacted",
     Purged => "purged",
 });
@@ -50,35 +46,33 @@ string_enum!(Origin {
 sql_text!(RecordType, Op, Origin);
 
 pub struct Entry<'a> {
-    pub project: &'a str,
-    pub record: RecordType,
-    pub id: String,
-    pub op: Op,
-    pub revision: Option<i64>,
-    pub fields: Vec<String>,
-    pub who: &'a Attribution,
-    pub event_id: Option<i64>,
-    pub origin: Origin,
+    project: &'a str,
+    record: RecordType,
+    id: i64,
+    op: Op,
+    revision: Option<i64>,
+    fields: Vec<String>,
+    who: &'a Attribution,
+    event_id: Option<i64>,
 }
 
 impl<'a> Entry<'a> {
     pub fn new(
         project: &'a str,
         record: RecordType,
-        id: impl ToString,
+        id: i64,
         op: Op,
         who: &'a Attribution,
     ) -> Self {
         Self {
             project,
             record,
-            id: id.to_string(),
+            id,
             op,
             revision: None,
             fields: Vec::new(),
             who,
             event_id: None,
-            origin: Origin::Recorded,
         }
     }
 
@@ -96,11 +90,6 @@ impl<'a> Entry<'a> {
         self.event_id = Some(event_id);
         self
     }
-
-    pub fn origin(mut self, origin: Origin) -> Self {
-        self.origin = origin;
-        self
-    }
 }
 
 // Appends an entry. Call inside the transaction that makes the change.
@@ -109,7 +98,7 @@ pub fn record(conn: &Connection, entry: Entry<'_>) -> Result<i64> {
         "INSERT INTO journal
              (project, record_type, record_id, op, revision, fields, actor, run, task_id,
               event_id, origin, at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'recorded', ?11)",
         params![
             entry.project,
             entry.record,
@@ -121,7 +110,6 @@ pub fn record(conn: &Connection, entry: Entry<'_>) -> Result<i64> {
             entry.who.run,
             entry.who.task,
             entry.event_id,
-            entry.origin,
             now(),
         ],
     )?;
@@ -137,6 +125,8 @@ pub struct NoteState<'a> {
     pub tags: &'a str,
     pub parent: Option<NoteId>,
     pub entity: Option<i64>,
+    pub confidence: Option<f64>,
+    pub basis: Option<&'a str>,
 }
 
 pub fn save_note_revision(
@@ -146,8 +136,9 @@ pub fn save_note_revision(
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO note_revisions
-             (note_id, revision, status, title, body, tags, parent_id, entity_id, actor, run, origin, at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'recorded', ?11)",
+             (note_id, revision, status, title, body, tags, parent_id, entity_id, confidence,
+              basis, actor, run, origin, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'recorded', ?13)",
         params![
             state.id,
             state.revision,
@@ -157,6 +148,8 @@ pub fn save_note_revision(
             state.tags,
             state.parent,
             state.entity,
+            state.confidence,
+            state.basis,
             who.author,
             who.run,
             now(),
@@ -169,99 +162,12 @@ pub fn save_note_revision(
     Ok(())
 }
 
-pub struct ConceptState<'a> {
-    pub id: &'a str,
-    pub revision: i64,
-    pub title: &'a str,
-    pub content: &'a str,
-    pub tags: &'a str,
-    pub sources: &'a str,
-    pub archived: bool,
-}
-
-pub fn save_concept_revision(
-    conn: &Connection,
-    state: &ConceptState<'_>,
-    who: &Attribution,
-    origin: Origin,
-    at: &str,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO concept_revisions
-             (concept_id, revision, title, content, tags, sources, archived, actor, run, origin, at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            state.id,
-            state.revision,
-            state.title,
-            state.content,
-            state.tags,
-            state.sources,
-            state.archived,
-            who.author,
-            who.run,
-            origin,
-            at,
-        ],
-    )?;
-    conn.execute(
-        "DELETE FROM concept_revisions WHERE concept_id = ?1 AND revision <= ?2",
-        params![state.id, state.revision - REVISIONS_KEPT],
-    )?;
-    Ok(())
-}
-
-// Queues a vector for removal from the search index.
-pub fn unindex(conn: &Connection, record: RecordType, id: impl ToString) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO index_deletions (record_type, record_id) VALUES (?1, ?2)",
-        params![record, id.to_string()],
-    )?;
-    Ok(())
-}
-
-// A note id or a concept id, as the caller wrote it.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum RecordId {
-    Number(i64),
-    Uuid(ConceptId),
-}
-
-impl RecordId {
-    fn text(&self) -> String {
-        match self {
-            Self::Number(id) => id.to_string(),
-            Self::Uuid(id) => id.to_string(),
-        }
-    }
-
-    fn check(&self, record: RecordType) -> Result<()> {
-        let fits = match self {
-            Self::Number(_) => record != RecordType::Concept,
-            Self::Uuid(_) => record == RecordType::Concept,
-        };
-        if fits {
-            Ok(())
-        } else {
-            Err(invalid(format!(
-                "a {record} id is {}",
-                if record == RecordType::Concept {
-                    "a UUID string"
-                } else {
-                    "an integer"
-                }
-            )))
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryQuery {
     #[serde(rename = "type")]
     pub record: Option<RecordType>,
-    pub id: Option<RecordId>,
+    pub id: Option<i64>,
     pub project: Option<Scope>,
     pub task: Option<NoteId>,
     pub cursor: Option<i64>,
@@ -275,7 +181,7 @@ pub struct HistoryEntry {
     pub project: String,
     #[serde(rename = "type")]
     pub record: RecordType,
-    pub id: Value,
+    pub id: i64,
     pub op: Op,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<i64>,
@@ -305,18 +211,17 @@ pub struct History {
 
 const ENTRY_SELECT: &str = "\
     SELECT j.id, j.at, j.project, j.record_type, j.record_id, j.op, j.revision, j.fields,
-           j.actor, j.run, j.task_id, j.origin,
-           coalesce(n.title, c.title, e.type || ':' || e.key), v.detail
+           j.actor, j.run, j.task_id, j.origin, coalesce(n.title, e.type || ':' || e.key),
+           v.detail
     FROM journal j
-    LEFT JOIN notes n ON j.record_type = 'note' AND n.id = CAST(j.record_id AS INTEGER)
-    LEFT JOIN concepts c ON j.record_type = 'concept' AND c.id = j.record_id
-    LEFT JOIN entities e ON j.record_type = 'entity' AND e.id = CAST(j.record_id AS INTEGER)
+    LEFT JOIN notes n ON j.record_type = 'note' AND n.id = j.record_id
+    LEFT JOIN entities e ON j.record_type = 'entity' AND e.id = j.record_id
     LEFT JOIN entity_events v ON v.id = j.event_id AND j.record_type = 'entity'";
 
 // Entries attributed to a task, or made to the notes beneath it.
-pub const IN_TASK: &str = "\
+const IN_TASK: &str = "\
     (j.task_id = ?
-     OR (j.record_type = 'note' AND CAST(j.record_id AS INTEGER) IN (
+     OR (j.record_type = 'note' AND j.record_id IN (
          WITH RECURSIVE sub (id) AS (
              SELECT ?
              UNION
@@ -325,19 +230,14 @@ pub const IN_TASK: &str = "\
          SELECT id FROM sub)))";
 
 fn entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
-    let record: RecordType = row.get(3)?;
-    let id: String = row.get(4)?;
     let fields: String = row.get(7)?;
     let detail: Option<String> = row.get(13)?;
     Ok(HistoryEntry {
         seq: row.get(0)?,
         at: row.get(1)?,
         project: row.get(2)?,
-        record,
-        id: match (record, id.parse::<i64>()) {
-            (RecordType::Concept, _) | (_, Err(_)) => Value::from(id),
-            (_, Ok(number)) => Value::from(number),
-        },
+        record: row.get(3)?,
+        id: row.get(4)?,
         op: row.get(5)?,
         revision: row.get(6)?,
         fields: serde_json::from_str(&fields).unwrap_or_default(),
@@ -356,12 +256,11 @@ pub fn history(conn: &Connection, query: &HistoryQuery, default_scope: &Scope) -
     let mut sql = format!("{ENTRY_SELECT} WHERE TRUE");
     let mut values: Vec<Sql> = Vec::new();
 
-    match (&query.record, &query.id) {
+    match (&query.record, query.id) {
         (Some(record), Some(id)) => {
-            id.check(*record)?;
             sql.push_str(" AND j.record_type = ? AND j.record_id = ?");
             values.push(Sql::Text(record.as_str().into()));
-            values.push(Sql::Text(id.text()));
+            values.push(Sql::Integer(id));
         }
         (None, Some(_)) => return Err(invalid("`id` needs `type`")),
         (record, None) => {
@@ -431,152 +330,87 @@ pub fn task_changes(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevisionRequest {
-    #[serde(rename = "type")]
-    pub record: RecordType,
-    pub id: RecordId,
+    pub id: NoteId,
     pub revision: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct Revision {
-    #[serde(rename = "type")]
-    pub record: RecordType,
-    pub id: Value,
-    pub revision: i64,
-    // False when this is an earlier state of the record.
-    pub current: bool,
-    pub origin: Origin,
-    pub at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub author: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    pub state: Value,
-}
-
-fn space_separated(text: &str) -> Vec<&str> {
-    text.split_whitespace().collect()
-}
-
-pub fn revision(conn: &Connection, request: &RevisionRequest) -> Result<Revision> {
-    request.id.check(request.record)?;
-    let id = request.id.text();
-    let (table, key, live, columns) = match request.record {
-        RecordType::Note => (
-            "note_revisions",
-            "note_id",
-            "notes",
-            "json_object('status', r.status, 'title', r.title, 'body', r.body, 'tags', r.tags,
-                         'parent', r.parent_id, 'entity', r.entity_id)",
-        ),
-        RecordType::Concept => (
-            "concept_revisions",
-            "concept_id",
-            "concepts",
-            "json_object('title', r.title, 'content', r.content, 'tags', r.tags,
-                         'sources', json(r.sources), 'archived', json(iif(r.archived, 'true', 'false')))",
-        ),
-        other => {
-            return Err(invalid(format!(
-                "a {other} has no revisions; its changes are listed by `history`"
-            )));
-        }
-    };
+// The state a note had at a revision; the current one when none is named.
+pub fn revision(conn: &Connection, request: &RevisionRequest) -> Result<Value> {
+    let id = request.id;
     let current: i64 = conn
-        .query_row(
-            &format!("SELECT revision FROM {live} WHERE id = ?1"),
-            [&id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT revision FROM notes WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
         .optional()?
-        .ok_or_else(|| MemoryError::NotFound(format!("{} {id}", request.record)))?;
+        .ok_or_else(|| MemoryError::NotFound(format!("note {id}")))?;
     let wanted = request.revision.unwrap_or(current);
-
-    let found = conn
-        .query_row(
-            &format!(
-                "SELECT r.revision, r.origin, r.at, r.actor, r.run, {columns}
-                 FROM {table} r WHERE r.{key} = ?1 AND r.revision = ?2"
-            ),
-            params![id, wanted],
-            |row| {
-                let state: String = row.get(5)?;
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Origin>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    state,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((revision, origin, at, author, run, state)) = found else {
-        return Err(MemoryError::NotFound(format!(
-            "revision {wanted} of {} {id} (the latest is {current}; older ones may have been \
-             redacted or dropped by retention)",
-            request.record
-        )));
-    };
-    let mut state: Value =
-        serde_json::from_str(&state).map_err(|error| MemoryError::Internal(error.into()))?;
-    if let Some(tags) = state.get("tags").and_then(Value::as_str) {
-        state["tags"] = Value::from(space_separated(tags));
-    }
-    Ok(Revision {
-        record: request.record,
-        id: match &request.id {
-            RecordId::Number(number) => Value::from(*number),
-            RecordId::Uuid(uuid) => Value::from(uuid.to_string()),
+    conn.query_row(
+        "SELECT revision, origin, at, actor, run, status, title, body, tags, parent_id,
+                entity_id, confidence, basis
+         FROM note_revisions WHERE note_id = ?1 AND revision = ?2",
+        params![id, wanted],
+        |row| {
+            let tags: String = row.get(8)?;
+            let revision: i64 = row.get(0)?;
+            Ok(json!({
+                "id": id,
+                "revision": revision,
+                "current": revision == current,
+                "origin": row.get::<_, Origin>(1)?,
+                "at": row.get::<_, String>(2)?,
+                "author": row.get::<_, Option<String>>(3)?,
+                "run": row.get::<_, Option<String>>(4)?,
+                "state": {
+                    "status": row.get::<_, String>(5)?,
+                    "title": row.get::<_, String>(6)?,
+                    "body": row.get::<_, String>(7)?,
+                    "tags": tags.split_whitespace().collect::<Vec<_>>(),
+                    "parent": row.get::<_, Option<i64>>(9)?,
+                    "entity": row.get::<_, Option<i64>>(10)?,
+                    "confidence": row.get::<_, Option<f64>>(11)?,
+                    "basis": row.get::<_, Option<String>>(12)?,
+                },
+            }))
         },
-        revision,
-        current: revision == current,
-        origin,
-        at,
-        author,
-        run,
-        state,
+    )
+    .optional()?
+    .ok_or_else(|| {
+        MemoryError::NotFound(format!(
+            "revision {wanted} of note {id} (the latest is {current}; older ones may have been \
+             redacted or dropped by retention)"
+        ))
     })
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RedactRequest {
-    #[serde(rename = "type")]
-    pub record: RecordType,
-    pub id: RecordId,
+    pub id: NoteId,
     pub author: Option<Author>,
     pub run: Option<RunId>,
 }
 
-// Deletes every revision but the current one. Journal entries stay.
+// Deletes every revision of a note but the current one. Journal entries stay.
 pub fn redact(conn: &mut Connection, request: RedactRequest) -> Result<i64> {
-    request.id.check(request.record)?;
-    let id = request.id.text();
-    let (table, key, live) = match request.record {
-        RecordType::Note => ("note_revisions", "note_id", "notes"),
-        RecordType::Concept => ("concept_revisions", "concept_id", "concepts"),
-        other => return Err(invalid(format!("a {other} has no revisions to redact"))),
-    };
+    let id = request.id;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (project, current): (String, i64) = tx
         .query_row(
-            &format!("SELECT project, revision FROM {live} WHERE id = ?1"),
-            [&id],
+            "SELECT project, revision FROM notes WHERE id = ?1",
+            [id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or_else(|| MemoryError::NotFound(format!("{} {id}", request.record)))?;
+        .ok_or_else(|| MemoryError::NotFound(format!("note {id}")))?;
     let removed = tx.execute(
-        &format!("DELETE FROM {table} WHERE {key} = ?1 AND revision < ?2"),
+        "DELETE FROM note_revisions WHERE note_id = ?1 AND revision < ?2",
         params![id, current],
     )? as i64;
     if removed > 0 {
         let who = Attribution::new(request.author, request.run, None);
         record(
             &tx,
-            Entry::new(&project, request.record, &id, Op::Redacted, &who).revision(current),
+            Entry::new(&project, RecordType::Note, id, Op::Redacted, &who).revision(current),
         )?;
     }
     tx.commit()?;
@@ -599,7 +433,7 @@ impl Journal {
             .await
     }
 
-    pub async fn revision(&self, request: RevisionRequest) -> Result<Revision> {
+    pub async fn revision(&self, request: RevisionRequest) -> Result<Value> {
         self.db.run(move |conn| revision(conn, &request)).await
     }
 
