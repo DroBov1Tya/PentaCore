@@ -33,16 +33,51 @@ The split matters. "Show every host whose `tls` check failed" is a query over fi
 
 **Lessons.** Know-how worth reusing is a note of kind `lesson`: the problem, what was found, how it was checked, whether it was confirmed, what was done. When a later, better check reaches a different conclusion, the lesson is updated; the earlier text stays as a revision and searches return only the current one.
 
+**Handing work down.** A lead agent gives part of the work to another agent as a step: the brief goes in its body, and the notes the other agent needs are linked from the step with `uses`. A note a task uses is context for that task and for every task beneath it, so a scope decision linked from the goal reaches every sub-agent at any depth, and a finding linked from one step reaches only the work under that step. The other agent is told only the step's id and starts with `resume task=<id>`: the reply's `context` holds the shared notes, nearest first, with their confidence and basis, followed by the tasks above with their bodies. A shared note that a newer one supersedes or contradicts names it in `superseded_by` or `contradicted_by`, as in `recall`; a dropped one is left out. One call, within the size budget, instead of the lead's whole conversation; `budget.omitted` counts what did not fit. Results travel back up as summaries.
+
 **Search before experimenting.** The instructions the server sends tell the agent to look for earlier work first.
 
 ## Install
 
-Requires Rust 1.88 or newer.
+### Prebuilt binaries
+
+Download the archive for your platform from [Releases](https://github.com/DroBov1Tya/PentaCore/releases/latest):
+
+| Platform | Archive |
+|---|---|
+| Linux x86_64 | `pentacore-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `pentacore-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS arm64 (Apple silicon) | `pentacore-<version>-aarch64-apple-darwin.tar.gz` |
+| Windows x86_64 | `pentacore-<version>-x86_64-pc-windows-msvc.zip` |
+| Windows arm64 | `pentacore-<version>-aarch64-pc-windows-msvc.zip` |
+
+Each archive holds the `pentacore` binary (`pentacore.exe` on Windows), this README, the license, the agent usage guide in `skills/` and `.env.example`. The binary is self-contained: SQLCipher and ONNX Runtime are linked in. Unpack it wherever you keep tools.
 
 ```sh
-git clone <this repository>
-cd pentacore
-cargo build --release
+tar -xzf pentacore-<version>-aarch64-apple-darwin.tar.gz
+```
+
+Platform notes:
+
+- **Linux.** Built on Ubuntu 24.04 and needs a glibc at least as new: Ubuntu 24.04, Debian 13, Fedora 40 or later. On older systems, build from source or use [Docker](#run-in-docker).
+- **macOS.** The binary is not signed. If it was downloaded with a browser, macOS quarantines it; clear the flag once: `xattr -d com.apple.quarantine pentacore`. Intel Macs are not supported: ONNX Runtime ships no binaries for them.
+- **Windows.** Needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (2015 to 2022), which most systems already have.
+
+Every release carries `SHA256SUMS`, a CycloneDX SBOM (`pentacore.cdx.json`) and a signed build provenance attestation. To check a download:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify pentacore-<version>-<target>.tar.gz --repo DroBov1Tya/PentaCore
+```
+
+### From source
+
+Requires Rust 1.88 or newer, and Perl and `make` for the bundled OpenSSL (on Windows, [Strawberry Perl](https://strawberryperl.com) and the MSVC build tools). Builds for the targets above only, for the same reason as the binaries.
+
+```sh
+git clone https://github.com/DroBov1Tya/PentaCore.git
+cd PentaCore
+cargo build --release --locked
 ```
 
 The binary is `target/release/pentacore`. Copy it wherever you keep tools.
@@ -74,6 +109,8 @@ claude mcp add pentacore -- /absolute/path/to/pentacore
 }
 ```
 
+On Windows the command is the full path to `pentacore.exe`, with backslashes doubled in JSON: `"C:\\Tools\\pentacore\\pentacore.exe"`.
+
 Then give the agent the usage guide in [`skills/pentacore-memory/SKILL.md`](skills/pentacore-memory/SKILL.md). For Claude Code, copy that directory into `~/.claude/skills/` or the project's `.claude/skills/`. For other agents, include its text in the system prompt.
 
 ## Run in Docker
@@ -104,7 +141,7 @@ Every variable is optional.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PENTACORE_HOME` | `~/.pentacore` | Data directory. `~/` means the user's home. Any other relative path is taken from the executable's directory, not the working directory. Created with mode `0700`. |
+| `PENTACORE_HOME` | `~/.pentacore` | Data directory. `~/` means the user's home. Any other relative path is taken from the executable's directory, not the working directory. Created with mode `0700` on Linux and macOS; on Windows it inherits the permissions of its parent directory. |
 | `PENTACORE_PROJECT` | name of the working directory | Project used when a call names none. |
 | `PENTACORE_TOOLS` | `core` | `core` lists the 16 everyday tools to the agent; `full` lists all 24. Every tool can be called either way. |
 | `PENTACORE_HTTP_ADDR` | unset (HTTP off) | Loopback address and port for the HTTP API. |
@@ -123,9 +160,9 @@ Listed by default (`core`):
 | `update_note` | Change a note. Each change is a new revision; `expected_revision` refuses a write over someone else's change. |
 | `get_note` | One note in full, with children, links and checklist. |
 | `recall` | Search notes and entities, most relevant first, repeats shown once. `kind` narrows it, e.g. to lessons. |
-| `link` | Typed links between notes: `depends_on`, `supports`, `contradicts`, `answers`, `supersedes`, `relates_to`. |
+| `link` | Typed links between notes: `depends_on`, `supports`, `contradicts`, `answers`, `supersedes`, `relates_to`, `uses`. |
 | `graph` | The tree beneath a note or an entity. |
-| `resume` | State of a project, or with `task` what is needed to continue that task, within a size budget. |
+| `resume` | State of a project, or with `task` what is needed to continue that task, including the context handed down to it, within a size budget. |
 | `checkpoint` | Save where the work stands mid-way, for the project or one task. |
 | `checklist` | Items on a note that are done or not done. |
 | `summarize` | Close a goal or step with its one summary. |
@@ -199,6 +236,18 @@ In a later session:
 {"name": "recall", "arguments": {"query": "TLS 1.0"}}
 ```
 
+Handing a step to a sub-agent, with a scope decision shared from the goal and what was found on `a.example.com` (summary note 4, written by `summarize` above):
+
+```json
+{"name": "note", "arguments": {"kind": "decision", "title": "Only ports 443 and 8443 are in scope"}}
+{"name": "link", "arguments": {"src": 1, "dst": 5, "kind": "uses"}}
+{"name": "note", "arguments": {"kind": "step", "title": "ZONE b.example.com", "parent": 1,
+  "body": "Check TLS on b.example.com. Report weak protocols and ciphers.",
+  "links": [{"kind": "uses", "to": 4}]}}
+```
+
+The sub-agent is told `zone=6` and starts with `{"name": "resume", "arguments": {"task": 6}}`. Its `context` lists summary 4, then decision 5, and goal 1 above it.
+
 ## Projects and several agents
 
 Everything belongs to a project. Reads default to the current project, and `"project": "*"` reads across all of them, so a lesson learned in one place can be found from another.
@@ -239,7 +288,7 @@ What is written to the memory is later read by an agent as context. An unauthori
 - **No caller text becomes SQL.** Values are bound parameters. Full-text queries are quoted, so FTS5 operators are plain text. Entity queries are assembled from an allowlist of fields and operators.
 - **Bounded everywhere.** Message size, body size, result counts, tree depth and attribute counts all have limits.
 - **Errors do not leak internals.** Callers see a short message; causes go to the log.
-- **Data at rest** sits in a `0700` directory, in `brain.db`, encrypted with SQLCipher. Deleted rows are overwritten (`secure_delete`), and the write-ahead log is emptied after a purge.
+- **Data at rest** sits in a `0700` directory (on Windows, one that inherits its parent's permissions), in `brain.db`, encrypted with SQLCipher. Deleted rows are overwritten (`secure_delete`), and the write-ahead log is emptied after a purge.
 
 Known limits:
 
@@ -284,9 +333,21 @@ src/
     index.rs                embeddings and search by meaning
     recall.rs               ranking, folding repeats
 skills/pentacore-memory/    usage guide for agents
+.github/workflows/release.yml  release builds
 ```
 
-The database file is `brain.db`. A plain `brain.sqlite` left by a release up to 0.7.0 is copied into an encrypted `brain.db` on the first start and then upgraded there; the old file is only read and stays where it was, as a backup you can delete. The schema is versioned through `PRAGMA user_version` and upgraded in one transaction.
+### Releasing
+
+Set the new `version` in `Cargo.toml`, commit, then push a tag of the same name with a `v`:
+
+```sh
+git tag v0.8.0
+git push origin v0.8.0
+```
+
+The `release` workflow builds every target on its own native runner, starts each binary and checks that it answers an MCP `initialize`, then publishes a GitHub release with the archives, `SHA256SUMS`, the SBOM and a build provenance attestation. It refuses a tag that does not match `Cargo.toml`. Run it by hand from the Actions tab to build without publishing; the archives are then kept as run artifacts.
+
+The database file is `brain.db`. A plain `brain.sqlite` left by a release up to 0.7.0 is copied into an encrypted `brain.db` on the first start and then upgraded there; the old file is only read and stays where it was, as a backup you can delete. The schema is versioned through `PRAGMA user_version` and upgraded in one transaction. A build refuses a database upgraded by a newer one: once a build that adds `uses` (schema version 4) has opened the file, builds made before it, release 0.7.1 among them, can no longer open it.
 
 ## License
 
