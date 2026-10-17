@@ -7,19 +7,19 @@ use serde_json::{Value, json};
 use super::memory::Brain;
 use super::memory::journal::RecordType;
 use super::memory::model::{
-    Attribution, Author, Edge, EdgeKind, MAX_GRAPH_DEPTH, MemoryError, NoteId, RunId, Scope,
-    invalid, string_enum,
+    Attribution, Author, Edge, EdgeKind, MemoryError, NoteId, RunId, Scope, invalid, string_enum,
 };
 use super::memory::practices;
-use super::memory::recall::{self, RecallQuery, SEMANTIC_CANDIDATES};
+use super::memory::recall::{self, RecallQuery};
 use super::memory::tasks;
+use crate::settings::limits::MAX_GRAPH_DEPTH;
+use crate::settings::ranking::SEMANTIC_CANDIDATES;
 
 mod describe;
 
+use crate::settings::limits::MAX_CHECKS_PER_CALL;
+use crate::settings::listing::DEFAULT_GRAPH_DEPTH;
 pub use describe::{definitions, describe};
-
-const DEFAULT_GRAPH_DEPTH: u8 = 8;
-const MAX_CHECKS_PER_CALL: usize = 32;
 
 string_enum!(Tool {
     Note => "note",
@@ -104,6 +104,10 @@ How to work:
 - A task is a goal; its parts are steps beneath it; findings go beneath their step.
 - Plan a step as a `checklist`. An item is done or not done; tick it the moment it is finished.
 - For many similar targets use entities and `mark_check`, not one checklist per target.
+- To hand part of the work to another agent, make it a step: the brief in its body, and the \
+notes it needs linked with `uses`. A note a task uses is context for every task beneath it too, \
+so share it at the level it applies to. The other agent starts with `resume` on that step; \
+`context` holds what was handed down.
 - When a step or goal is finished, `summarize` it while you still see everything: all that was \
 done in brief, the outcome in detail. `task_summary` reads a task from summaries alone.
 - Keep reusable know-how as a note of kind `lesson`: the problem, what was found, how it was \
@@ -158,7 +162,10 @@ struct GraphArgs {
 struct ResumeArgs {
     project: Option<Scope>,
     task: Option<NoteId>,
-    budget_chars: Option<usize>,
+    children_limit: Option<usize>,
+    children_cursor: Option<NoteId>,
+    #[serde(default)]
+    include_ancestors: bool,
 }
 
 #[derive(Deserialize)]
@@ -382,19 +389,18 @@ async fn resume(brain: &Brain, args: ResumeArgs) -> Result<Value, MemoryError> {
         if args.project.is_some() {
             return Err(invalid("give either task or project, not both"));
         }
-        let budget = args.budget_chars;
-        return brain
-            .db
-            .run(move |conn| {
-                let mut state = tasks::resume(conn, task, budget)?;
-                // What is left to tick off says more about the state than any status.
-                state["checklist"] = practices::open_items(conn, task)?;
-                Ok(state)
-            })
-            .await;
+        let query = tasks::Query {
+            task,
+            children_limit: args.children_limit,
+            children_cursor: args.children_cursor,
+            include_ancestors: args.include_ancestors,
+        };
+        return brain.db.run(move |conn| tasks::resume(conn, &query)).await;
     }
-    if args.budget_chars.is_some() {
-        return Err(invalid("budget_chars applies to a task; give task too"));
+    if args.children_limit.is_some() || args.children_cursor.is_some() || args.include_ancestors {
+        return Err(invalid(
+            "children_limit, children_cursor and include_ancestors apply to a task; give task too",
+        ));
     }
     let scope = args.project.unwrap_or_else(|| brain.default_scope());
     let mut state = to_json(brain.notes.snapshot(scope.clone()).await?)?;

@@ -4,21 +4,18 @@ use super::db::{Db, Tree};
 use super::journal::{self, Entry, NoteState, Op, RecordType};
 use super::model::{
     Attribution, Basis, Checkpoint, Confidence, CreatedNote, Edge, EdgeKind, EntityId, FindQuery,
-    FindResult, Graph, GraphNode, Hit, Limit, LinkedNote, MAX_BODY_BYTES, MemoryError,
-    NewCheckpoint, NewNote, Note, NoteBrief, NoteDetail, NoteId, NoteKind, NotePatch, ProjectName,
-    Scope, Snapshot, TaskBrief, invalid, names, now, tag_strings,
+    FindResult, Graph, GraphNode, Hit, Limit, LinkedNote, MemoryError, NewCheckpoint, NewNote,
+    Note, NoteBrief, NoteDetail, NoteId, NoteKind, NotePatch, ProjectName, Scope, Snapshot,
+    TaskBrief, invalid, names, now, tag_strings,
 };
+use crate::settings::limits::MAX_BODY_BYTES;
+use crate::settings::listing::{
+    DEFAULT_FIND_LIMIT, MAX_CHILDREN_LISTED, MAX_GRAPH_EDGES, MAX_GRAPH_NODES, SIMILAR_LIMIT,
+    SNAPSHOT_RECENT_LIMIT, SNAPSHOT_SECTION_LIMIT,
+};
+use crate::settings::storage::CHECKPOINTS_KEPT;
 
-const DEFAULT_FIND_LIMIT: usize = 10;
-const MAX_GRAPH_NODES: usize = 500;
-const MAX_GRAPH_EDGES: usize = 1000;
-const MAX_CHILDREN_LISTED: i64 = 200;
-const SNAPSHOT_SECTION_LIMIT: i64 = 30;
-const SNAPSHOT_RECENT_LIMIT: i64 = 20;
-const SIMILAR_LIMIT: i64 = 3;
-const CHECKPOINTS_KEPT: i64 = 20;
-
-const NOTE_COLUMNS: &str = "id, project, kind, status, title, body, tags, parent_id, created_at, updated_at, entity_id, author, revision, confidence, basis, verified_at, verified_by, summary";
+const NOTE_COLUMNS: &str = "id, project, kind, status, title, body, tags, parent_id, created_at, updated_at, entity_id, author, revision, confidence, basis, verified_at, verified_by, summary, report_ids";
 pub(super) const BRIEF_COLUMNS: &str =
     "n.id, n.project, n.kind, n.status, n.title, n.parent_id, n.updated_at, n.confidence";
 
@@ -134,6 +131,13 @@ fn note_from_row(row: &Row<'_>) -> rusqlite::Result<Note> {
         verified_at: row.get(15)?,
         verified_by: row.get(16)?,
         summary: row.get(17)?,
+        report_ids: serde_json::from_str(&row.get::<_, String>(18)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                18,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
     })
 }
 
@@ -236,12 +240,15 @@ pub(super) fn create(
         &tx,
         Entry::new(&note.project, RecordType::Note, id, Op::Created, &who).revision(note.revision),
     )?;
+    if matches!(note.kind, NoteKind::Goal | NoteKind::Step) {
+        super::summaries::ensure(&tx, &note, &who)?;
+    }
     let similar = similar_notes(&tx, &note)?;
     tx.commit()?;
     Ok(CreatedNote { note, similar })
 }
 
-fn save_revision(conn: &Connection, note: &Note, who: &Attribution) -> Result<()> {
+pub(super) fn save_revision(conn: &Connection, note: &Note, who: &Attribution) -> Result<()> {
     journal::save_note_revision(
         conn,
         &NoteState {
@@ -371,6 +378,15 @@ fn insert_edge(conn: &Connection, edge: &Edge) -> Result<bool> {
     }
     ensure_exists(conn, edge.src)?;
     ensure_exists(conn, edge.dst)?;
+    if edge.kind == EdgeKind::Uses {
+        let source = load(conn, edge.src)?;
+        if !matches!(source.kind, NoteKind::Goal | NoteKind::Step) {
+            return Err(invalid(format!(
+                "note {} is a {}; only a goal or a step uses notes as context",
+                source.id, source.kind
+            )));
+        }
+    }
     if edge.kind == EdgeKind::DependsOn && depends_on(conn, edge.dst, edge.src)? {
         return Err(MemoryError::Conflict(format!(
             "note {} already depends on note {}; this link would close a cycle",
@@ -398,6 +414,13 @@ fn depends_on(conn: &Connection, from: NoteId, to: NoteId) -> Result<bool> {
 }
 
 pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let note = update_in(&tx, patch)?;
+    tx.commit()?;
+    Ok(note)
+}
+
+pub(super) fn update_in(conn: &Connection, patch: NotePatch) -> Result<Note> {
     let NotePatch {
         id,
         title,
@@ -433,8 +456,8 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
         return Err(invalid("give either body or append, not both"));
     }
 
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let current = load(&tx, id)?;
+    let tx = conn;
+    let current = load(tx, id)?;
     if let Some(expected) = expected_revision
         && expected != current.revision
     {
@@ -447,10 +470,10 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
         current.kind.check_status(status)?;
     }
     if let Some(parent) = parent {
-        check_new_parent(&tx, &current, parent)?;
+        check_new_parent(tx, &current, parent)?;
     }
     if let Some(entity) = entity {
-        check_entity(&tx, entity, &current.project)?;
+        check_entity(tx, entity, &current.project)?;
     }
     let body = match (body, append) {
         (Some(body), _) => body.into(),
@@ -505,16 +528,15 @@ pub(super) fn update(conn: &mut Connection, patch: NotePatch) -> Result<Note> {
             basis,
         ],
     )?;
-    let note = load(&tx, id)?;
-    let who = Attribution::new(author, run, Some(task_of(&tx, id, None)?));
-    save_revision(&tx, &note, &who)?;
+    let note = load(tx, id)?;
+    let who = Attribution::new(author, run, Some(task_of(tx, id, None)?));
+    save_revision(tx, &note, &who)?;
     journal::record(
-        &tx,
+        tx,
         Entry::new(&note.project, RecordType::Note, id, Op::Updated, &who)
             .revision(note.revision)
             .fields(changed),
     )?;
-    tx.commit()?;
     Ok(note)
 }
 

@@ -12,22 +12,16 @@ use super::model::{
     validated_string,
 };
 use super::notes::check_task;
+use crate::settings::limits::{
+    DEFAULT_CLAIM_SECONDS, MAX_ATTR_NAME_CHARS, MAX_ATTR_TEXT_CHARS, MAX_ATTRS_PER_CALL,
+    MAX_ATTRS_PER_ENTITY, MAX_CLAIM_SECONDS, MAX_IN_VALUES, MAX_KEY_CHARS,
+};
+use crate::settings::listing::{
+    DEFAULT_QUERY_LIMIT, MAX_EVENTS_LISTED, MAX_GRAPH_EDGES, MAX_GRAPH_NODES, MAX_GROUPS,
+    MAX_LISTED,
+};
 
 const DEFAULT_STATUS: &str = "new";
-const MAX_KEY_CHARS: usize = 256;
-const MAX_ATTR_NAME_CHARS: usize = 48;
-const MAX_ATTR_TEXT_CHARS: usize = 1024;
-const MAX_ATTRS_PER_CALL: usize = 32;
-const MAX_ATTRS_PER_ENTITY: usize = 64;
-const MAX_IN_VALUES: usize = 32;
-const DEFAULT_CLAIM_SECONDS: u32 = 15 * 60;
-const MAX_CLAIM_SECONDS: u32 = 24 * 60 * 60;
-const DEFAULT_QUERY_LIMIT: usize = 20;
-const MAX_GROUPS: i64 = 100;
-const MAX_LISTED: i64 = 100;
-const MAX_EVENTS_LISTED: i64 = 20;
-const MAX_GRAPH_NODES: usize = 500;
-const MAX_GRAPH_EDGES: usize = 1000;
 
 type Result<T> = std::result::Result<T, MemoryError>;
 

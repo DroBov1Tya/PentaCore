@@ -2,20 +2,16 @@ use anyhow::anyhow;
 use rusqlite::{Connection, TransactionBehavior};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use super::model::{MemoryError, invalid};
+use crate::settings::storage::{BUSY_TIMEOUT, FILE, LEGACY_FILE, MAX_TREE_DEPTH, PLAIN_HEADER};
 
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 4] = [
     include_str!("migrations/001_notes.sql"),
     include_str!("migrations/002_state.sql"),
     include_str!("migrations/003_history.sql"),
+    include_str!("migrations/004_hierarchy.sql"),
 ];
-const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-
-const FILE: &str = "brain.db";
-const LEGACY_FILE: &str = "brain.sqlite";
-const PLAIN_HEADER: &[u8] = b"SQLite format 3\0";
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
@@ -164,9 +160,6 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
-
-// Well below the depth where SQLite fails on cascading deletes.
-pub const MAX_TREE_DEPTH: i64 = 64;
 
 #[derive(Clone, Copy)]
 pub enum Tree {

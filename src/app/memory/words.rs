@@ -5,15 +5,9 @@
 use rusqlite::{Connection, params};
 
 use super::model::MemoryError;
-
-const MAX_CHUNKS: usize = 24;
-const EXACT: f32 = 1.0;
-const PREFIX: f32 = 0.8;
-const STEM: f32 = 0.6;
-const PARTIAL: f32 = 0.5;
-const TITLE_BONUS: f32 = 0.1;
-// Below this a word says nothing by itself ("of", "in").
-const MIN_PREFIX_CHARS: usize = 3;
+use crate::settings::ranking::{
+    EXACT, MAX_CHUNKS, MIN_PREFIX_CHARS, PARTIAL, PREFIX, STEM, TITLE_BONUS,
+};
 
 type Result<T> = std::result::Result<T, MemoryError>;
 

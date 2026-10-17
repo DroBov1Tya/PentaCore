@@ -12,9 +12,9 @@ use super::model::{
     Attribution, Author, Limit, MemoryError, NoteId, RunId, Scope, invalid, now, sql_text,
     string_enum,
 };
+use crate::settings::listing::DEFAULT_HISTORY_LIMIT;
 
 pub const REVISIONS_KEPT: i64 = 50;
-const DEFAULT_HISTORY_LIMIT: usize = 20;
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
@@ -137,8 +137,9 @@ pub fn save_note_revision(
     conn.execute(
         "INSERT INTO note_revisions
              (note_id, revision, status, title, body, tags, parent_id, entity_id, confidence,
-              basis, actor, run, origin, at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'recorded', ?13)",
+              basis, actor, run, origin, at, report_ids)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'recorded', ?13,
+                 (SELECT report_ids FROM notes WHERE id = ?1))",
         params![
             state.id,
             state.revision,
@@ -346,7 +347,7 @@ pub fn revision(conn: &Connection, request: &RevisionRequest) -> Result<Value> {
     let wanted = request.revision.unwrap_or(current);
     conn.query_row(
         "SELECT revision, origin, at, actor, run, status, title, body, tags, parent_id,
-                entity_id, confidence, basis
+                entity_id, confidence, basis, report_ids
          FROM note_revisions WHERE note_id = ?1 AND revision = ?2",
         params![id, wanted],
         |row| {
@@ -369,6 +370,7 @@ pub fn revision(conn: &Connection, request: &RevisionRequest) -> Result<Value> {
                     "entity": row.get::<_, Option<i64>>(10)?,
                     "confidence": row.get::<_, Option<f64>>(11)?,
                     "basis": row.get::<_, Option<String>>(12)?,
+                    "report_ids": serde_json::from_str::<Value>(&row.get::<_, String>(13)?).unwrap_or(Value::Null),
                 },
             }))
         },

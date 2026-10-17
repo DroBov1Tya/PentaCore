@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::oneshot;
 
 use crate::config::Config;
@@ -9,9 +8,8 @@ pub mod memory;
 mod server;
 mod tools;
 
+use crate::settings::server::HTTP_SHUTDOWN_GRACE;
 use memory::Brain;
-
-const HTTP_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub async fn run(config: Config) -> Result<()> {
     tracing::info!(home = %config.home.display(), project = config.default_project.as_str(), "starting pentacore");

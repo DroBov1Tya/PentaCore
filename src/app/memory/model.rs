@@ -1,15 +1,8 @@
+use crate::settings::limits::{
+    MAX_AUTHOR_CHARS, MAX_BASIS_CHARS, MAX_BODY_BYTES, MAX_LIMIT, MAX_PROJECT_CHARS,
+    MAX_QUERY_CHARS, MAX_TAG_CHARS, MAX_TITLE_CHARS, MAX_TOKEN_CHARS,
+};
 use serde::{Deserialize, Serialize};
-
-pub const MAX_TITLE_CHARS: usize = 200;
-pub const MAX_BODY_BYTES: usize = 64 * 1024;
-pub const MAX_TAG_CHARS: usize = 32;
-pub const MAX_PROJECT_CHARS: usize = 64;
-pub const MAX_QUERY_CHARS: usize = 512;
-pub const MAX_LIMIT: u64 = 100;
-pub const MAX_GRAPH_DEPTH: u8 = 32;
-pub const MAX_TOKEN_CHARS: usize = 48;
-pub const MAX_AUTHOR_CHARS: usize = 64;
-pub const MAX_BASIS_CHARS: usize = 500;
 
 pub type NoteId = i64;
 pub type EntityId = i64;
@@ -125,6 +118,8 @@ string_enum!(
         Answers => "answers",
         Supersedes => "supersedes",
         RelatesTo => "relates_to",
+        // The target is context for the source task and everything beneath it.
+        Uses => "uses",
     }
 );
 
@@ -572,9 +567,11 @@ pub struct Note {
     pub verified_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified_by: Option<String>,
-    // True for the closing summary of the task this note sits under.
+    // True for the live summary of the task this note sits under.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub summary: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub report_ids: Vec<NoteId>,
     pub created_at: String,
     pub updated_at: String,
 }

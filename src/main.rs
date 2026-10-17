@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod app;
 mod config;
+mod settings;
 
 #[tokio::main]
 async fn main() -> Result<()> {

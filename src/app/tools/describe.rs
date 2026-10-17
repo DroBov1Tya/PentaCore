@@ -8,8 +8,9 @@ use std::fmt;
 use super::{DEFAULT_GRAPH_DEPTH, Tool};
 use crate::app::memory::entities::Op;
 use crate::app::memory::journal::RecordType;
-use crate::app::memory::model::{EdgeKind, MAX_GRAPH_DEPTH, NoteKind, Status};
-use crate::app::memory::tasks;
+use crate::app::memory::model::{EdgeKind, NoteKind, Status};
+use crate::settings::limits::MAX_GRAPH_DEPTH;
+use crate::settings::resume::{DEFAULT_CHILDREN, MAX_CHILDREN};
 
 // Every tool, for the HTTP API.
 pub fn definitions() -> Value {
@@ -81,11 +82,6 @@ fn depth() -> Value {
     json!({ "type": "integer", "minimum": 1, "maximum": MAX_GRAPH_DEPTH, "default": DEFAULT_GRAPH_DEPTH })
 }
 
-fn budget_chars() -> Value {
-    json!({ "type": "integer", "minimum": tasks::MIN_BUDGET_CHARS,
-        "maximum": tasks::MAX_BUDGET_CHARS, "default": tasks::DEFAULT_BUDGET_CHARS })
-}
-
 const FIELD_RULES: &str = "A column (id, type, key, status, confidence, parent, author, \
 created_at, updated_at), `attrs.<name>`, `check.<name>` (null when never run) or `claimed`.";
 
@@ -113,6 +109,8 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
                         "type": "array",
                         "maxItems": 16,
                         "items": object(json!({ "kind": one_of(EdgeKind::ALL), "to": integer() }), &["kind", "to"]),
+                        "description": "Read as 'this <kind> to'. A goal or step that `uses` a note \
+                            hands it down as context to itself and every task beneath it.",
                     },
                     "entity": id("Entity this note is about."),
                     "confidence": confidence(),
@@ -169,7 +167,8 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
         ),
         Tool::Link => (
             "Connect two notes, read as 'src <kind> dst'; remove=true takes the link away. \
-             depends_on must stay acyclic.",
+             depends_on must stay acyclic. A goal or step that `uses` a note hands it down as \
+             context to itself and every task beneath it; `resume` returns it.",
             object(
                 json!({
                     "src": integer(),
@@ -195,14 +194,21 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
         Tool::Resume => (
             "Without `task`: unfinished goals, steps in progress, open questions, recent notes, \
              entity counts, the last checkpoint, and `tasks` with the changes since each one's \
-             checkpoint. With `task`: its last checkpoint, progress, blockers, failed attempts, \
-             changes after the checkpoint, next steps, decisions, and every checklist item \
-             still open, cut to `budget_chars`.",
+             checkpoint. With `task` (the root of the area you were given): its brief, its \
+             summary (whole, no size limit) with freshness and report ids, one page of its immediate children (id, \
+             kind, title, status, summary id; never expanded), its last checkpoint, open \
+             checklist items and `context.shared` (notes it or a task above it `uses`). \
+             Children are paged with `children_limit` and `children_cursor` (the `next_cursor` \
+             of the last page); read one with `resume` on its id or `task_summary`. The tasks \
+             above are left out unless `include_ancestors` is true.",
             object(
                 json!({
                     "project": text(PROJECT),
                     "task": id("Goal or step to continue. Not together with `project`."),
-                    "budget_chars": budget_chars(),
+                    "children_limit": json!({ "type": "integer", "minimum": 1,
+                        "maximum": MAX_CHILDREN, "default": DEFAULT_CHILDREN }),
+                    "children_cursor": id("`next_cursor` of the previous page of children."),
+                    "include_ancestors": json!({ "type": "boolean", "default": false }),
                 }),
                 &[],
             ),
@@ -239,15 +245,22 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
             ),
         ),
         Tool::Summarize => (
-            "Close a goal or step: write its one summary and set its status. Calling again \
-             replaces the summary; the old text stays as a revision. The reply names checklist \
-             items left open and finished sub-tasks without a summary.",
+            "Write the one live summary of a goal or step. By default it also closes the task \
+             (`status`, default done); with close=false the task stays as it is, to keep the \
+             summary current mid-work. Calling again replaces the summary; the old text stays as \
+             a revision. `report_ids` lists the detailed notes it points to (kept if omitted). \
+             The reply gives `freshness`, checklist items left open and finished sub-tasks \
+             without a summary.",
             object(
                 json!({
                     "task": integer(),
                     "result": text("The outcome in detail, usable without the task's notes."),
                     "work": text("All that was done, in brief, failures included."),
                     "status": { "type": "string", "enum": ["done", "failed", "dropped"], "default": "done" },
+                    "close": json!({ "type": "boolean", "default": true }),
+                    "report_ids": json!({ "type": "array", "maxItems": 64, "items": integer() }),
+                    "expected_change_version": json!({ "type": "integer",
+                        "description": "`freshness.change_version` you read; a mismatch means the task changed since." }),
                     "confidence": confidence(),
                     "basis": string(),
                     "author": string(),
@@ -257,11 +270,20 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
             ),
         ),
         Tool::TaskSummary => (
-            "Read a task from summaries alone: its own, then those of the goals and steps \
-             beneath it, plus checklist items still open. Answers 'what was done and found \
-             here' without the task's notes.",
+            "Read a task from summaries alone: its own, with freshness and report ids, then one \
+             page of its immediate children (id, kind, title, status, summary id). Answers \
+             'what was done and found here' without the task's notes. Children are paged with \
+             `children_limit` and `children_cursor` (or `children_offset`); \
+             `include_child_summaries` adds each child's own summary.",
             object(
-                json!({ "task": integer(), "budget_chars": budget_chars() }),
+                json!({
+                    "task": integer(),
+                    "children_limit": json!({ "type": "integer", "minimum": 1,
+                        "maximum": MAX_CHILDREN, "default": DEFAULT_CHILDREN }),
+                    "children_cursor": id("`next_cursor` of the previous page."),
+                    "children_offset": json!({ "type": "integer", "minimum": 0 }),
+                    "include_child_summaries": json!({ "type": "boolean", "default": false }),
+                }),
                 &["task"],
             ),
         ),

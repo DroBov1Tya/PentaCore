@@ -11,15 +11,13 @@ use serde_json::{Value, json};
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::memory::Brain;
 use crate::app::memory::model::MemoryError;
 use crate::app::tools::{self, Tool};
 use crate::config::HttpConfig;
-
-const MAX_BODY_BYTES: usize = 256 * 1024;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+use crate::settings::server::{MAX_REQUEST_BYTES as MAX_BODY_BYTES, REQUEST_TIMEOUT};
 
 // A bind failure is logged and skipped, so MCP keeps working.
 pub async fn serve(

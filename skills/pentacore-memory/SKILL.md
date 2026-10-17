@@ -1,7 +1,7 @@
 ---
 name: pentacore-memory
 description: Use when pentacore MCP memory tools are available.
-version: 3.0.0
+version: 3.3.0
 author: DroBoV1tya
 license: MIT
 ---
@@ -23,12 +23,12 @@ Titles, bodies, tags, entity keys/attrs, `find`/`recall` queries — English, AS
 1. **Look before try.** `recall` first; work where nothing recorded, or `confidence` low / `verified_at` old / `basis` improvable.
 2. **Tree.** goal -> steps -> (attempts/facts/decisions) beneath what they belong to. Unparented notes are invisible to `graph`.
 3. **Checklist in pentacore.** Add items when starting a step; tick with `checklist` the moment done (never only in chat; never tick undone). `resume task=` -> unticked items = the queue. Step `done` when checklist complete.
-4. **Summarize every level at close.** `summarize(task, work, result)`: work = one line per action incl. failures/clean checks; result = outcome usable without opening notes (exact values, what holds/doesn't, what's open). Parent summarizes from children's summaries (`task_summary` reads them in tree order within `budget_chars`). Re-`summarize` replaces (revision kept). `parts_without_summary` = unsummarised children.
+4. **Summarize every level at close.** `summarize(task, work, result)`: work = one line per action incl. failures/clean checks; result = outcome usable without opening notes (exact values, what holds/doesn't, what's open). Parent summarizes from children's summaries (`task_summary` reads them: own summary + one page of children). Re-`summarize` replaces (revision kept). `parts_without_summary` = unsummarised children.
 5. **Confidence + basis** on every fact/decision/lesson/summary (returned with the text so the next agent sees how sure you were): 0.95+ documented-stable; 0.9-1.0 reproduced here; 0.8-0.95 web+checked; 0.4-0.6 web-unchecked; 0.3-0.6 inference. Basis = 1-2 sentences a stranger needs to believe it. Recheck holds -> `confirm` (refreshes verified_at); wrong -> `update_note` + new confidence/basis (old text stays as revision); reversed decision -> new note + `supersedes` link.
 
 ## Session start
 
-`resume` -> unfinished goals, active steps, open questions, last checkpoint. Pick task -> `resume task=` -> its checkpoint (read first), blockers, failures, `changes_since_checkpoint`, open checklist. `graph type=note` for whole tree. Empty -> new work, create goal.
+`resume` -> unfinished goals, active steps, open questions, last checkpoint. Pick task -> `resume task=` -> brief, summary (`freshness.stale`, `report_ids` = detail to open), one page of immediate children (id, kind, title, status: never expanded; page with `children_cursor`), checkpoint (read first), open checklist, `context.shared`, `changes_since_checkpoint`. Failures/decisions/blockers: in the summary, else `find under`. Descend with `resume task=<child>`; `include_ancestors=true` only if you need what is above. `graph type=note` for whole tree. Empty -> new work, create goal.
 
 ## Store choice
 
@@ -49,7 +49,7 @@ Kinds: `goal` (tree root), `step`, `attempt` (status required: active/done/faile
 - Title carries the point (listings show titles only).
 - Wrong fact -> `dropped` + `contradicts`/`supersedes` link to correction; never silent delete.
 - `append` for running logs; `note` returns `similar` -> update that, don't duplicate.
-- Links read "source kind target": depends_on, supports, contradicts, answers, supersedes, relates_to.
+- Links read "source kind target": depends_on, supports, contradicts, answers, supersedes, relates_to, uses (goal/step only: target is context for the task and its subtree, see Zones).
 - Tags: 1-32 chars letters/digits/`.`/`_`/`-` (no colons/spaces); FTS-indexed.
 
 ## Search
@@ -66,16 +66,34 @@ Tools listed by default: note, update_note, get_note, recall, link, graph, resum
 
 `checklist` = plan of one step; `mark_check` = same named check across many entities (several per call via `checks`) -> queryable `check.<name>` (null = not yet run). `query_entities`: columns (id/type/key/status/confidence/parent/author/created_at/updated_at), `attrs.<n>`, `check.<n>`, `claimed`; ops eq/ne/gt/gte/lt/lte/in/contains/is_null/not_null, ANDed. `total` = full match count; `group_by` = progress report; `ne` also matches missing field. Notes about an entity: pass `entity=` -> `get_entity` lists them.
 
-## Zones (lead + subagents)
+## Decomposing work
 
-Purpose: no agent holds whole context — each writes detail only in its zone, compressed summaries travel up, any level drills back to raw detail.
+Applies to any task (a pentest, a refactor, a document, an investigation). Not tied to a role: whoever holds a task may split it.
 
-- Zone = ANY ownership unit (subdomain, host, subsystem, feature, experiment, document, subtask). Nest freely; depth = real hierarchy; zones may split later without touching parents.
-- One `step` note per zone ("ZONE <name>"), tag `zone-<name>`, under goal or wider zone. Agent writes ONLY `parent=` own zone id — say so in brief; server does NOT enforce isolation, only `find under:`/`task_summary` give clean subtree views. Adding own sub-zone OK; editing sibling NO.
-- Up: at wave close `summarize(zone)` — result = compact brief parent needs (verdicts, statuses, open items, pointers to detail ids + evidence paths), work = lines. Parent reads `task_summary(parent, budget_chars)` = summaries only, in budget. Summaries fold from children's summaries. A summary without pointers to its detail = bug.
-- Down: `get_note(id)` / `find(q, under=zone)` restores detail; detail notes self-contained, cite evidence paths.
-- Side effects: `summarize` sets the task's status (`done` unless `status` given) and reports checklist items left open; no stale flag -> after any change under a zone, re-summarize; treat summary as current only if nothing changed under it since.
-- Subagent brief contract: zone id + write-only-under-it; read first (`resume`, `get_note(zone)`, `find under`); return upward = written-note ids + one-line verdict, never raw dumps; tick own checklist items.
+- **Split when it pays.** A part earns its own step only if it has a different objective, a different done-criterion, or can run independently. Same objective continued = same step. A step you can finish and verify in one sitting is not split further.
+- **Shape of a part.** One objective, one observable done-criterion written down before work starts (in the step body or as checklist items), a named result. A part you cannot state in a sentence is not decomposed yet.
+- **Look before you create.** `resume` the parent: its children (title, kind, status) show what exists. Extend or reopen a matching child instead of making a duplicate. `recall` the problem first (habit 1).
+- **Depth follows the problem.** Add a level only when a part has outgrown one step. If you are about to create a child whose brief repeats yours, do the work instead. Create children as findings demand, not all up front.
+- **Anti-recursion.** Work what you were assigned, in your subtree. Do not open every branch, re-read every report, or re-verify finished siblings. Leave your subtree only for a concrete reason (a `uses` link or dependency, needed evidence, a contradiction, a result that would otherwise be wrong) and stop once that need is met. Not clearly required: report the dependency, don't expand.
+- **Self-check before closing** (before `summarize`): (1) each done-criterion met, with evidence you can point at? (2) checklist fully ticked, nothing skipped silently? (3) failures and clean checks recorded, not only wins? (4) did anything contradict an earlier note (`contradicts`/`supersedes`/`update_note`)? (5) are `confidence`/`basis` honest: observed vs inferred? (6) can a stranger act on the summary without opening notes, and does it list `report_ids` for detail? Any "no": fix or record it as open in the summary.
+- **Reflect mid-work.** After a failed attempt or a surprise: record it (`attempt` failed), then ask what assumption broke and whether the plan, the split, or a parent's note must change. Same approach failing twice = change the approach, not the retry count. If new facts change the goal itself, stop and say so upward.
+- **Independent check for high stakes.** A result others will build on gets verified by someone who did not produce it (another agent, or a different method), recorded as `confirm` or as a `contradicts` link.
+- **Open items travel up.** Whatever remains unresolved goes in the summary and stays as unticked checklist items; `summarize` reports them (`checklist_left_open`).
+
+## Zones (areas handed to other agents)
+
+Purpose: no agent needs the whole context at once — each works from an assigned zone, compressed summaries travel up, and any level can drill back to detail when the task needs it.
+
+- Zone = ANY work unit (subdomain, host, subsystem, feature, experiment, document, subtask). Nest freely; depth = real hierarchy; zones may split later without touching parents.
+- One `step` note per zone ("ZONE <name>"), tag `zone-<name>`, under goal or wider zone. State the assigned zone and expected deliverable in the brief. Work in that zone and its descendants by default. Read child summaries to understand the breakdown; open detailed notes only as the task requires. Do not walk every branch, open every report or search the whole project just because it is available.
+- The assigned zone is a work scope, NOT an access boundary. The server does NOT enforce it; `find under:` and `task_summary` are navigation filters. Do not edit other zones as routine cleanup, and do not treat neighboring zones as forbidden.
+- Go outside the assigned subtree only when the task clearly requires it: an explicit dependency points there, needed evidence or a contradiction is there, or the current result would otherwise be wrong or incomplete. Search by the specific identifier, link or missing fact; stop when the need is resolved. Do not recursively expand into unrelated branches.
+- A cross-zone write is allowed when correctness requires it. Make the smallest relevant update in the appropriate zone, preserve its existing structure, and record in your own zone summary why you crossed scope and which note IDs you read or changed. If the task does not clearly require the change, report the dependency instead of expanding the work.
+- Up: at wave close `summarize(zone)` — result = compact brief parent needs (verdicts, statuses, open items, pointers to detail ids + evidence paths), work = lines. Parent reads `task_summary(parent)` = summaries only (reply capped at 64 KB; page children). Summaries fold from children's summaries. A summary without pointers to its detail = bug.
+- Down: `get_note(id)` / `find(q, under=zone)` restores detail; detail notes self-contained, cite evidence paths. Follow a summary pointer or search the assigned subtree for the specific detail needed; do not read all details by default.
+- Handoff (parent -> child, any depth): parent creates the child's zone in ONE call: `note(kind=step, parent=<own zone>, title="ZONE <name>", body=<brief: objective, constraints, done-criteria, what to return>, links=[{kind:"uses", to:<id>}...])`. `uses` = "this task needs that note": the target is context for the zone AND every zone beneath it, so share at the level it applies (scope/rules of engagement from the goal; one host's recon from that host's zone). Share summary notes (the `Summary:` fact under a step), not steps. Child is told only the zone id; never pass your conversation history. Child's first call: `resume task=<zone>` (brief, summary with `freshness`, one page of children with kind/title/status, never expanded; page via `children_cursor`) -> `context.shared` (handed-down notes, nearest first, with confidence/basis, `via` = who shared, `superseded_by`/`contradicted_by` -> read those first) + own summary + immediate children + checkpoint. Zones above are NOT returned unless `include_ancestors=true`; ask for them only when you need the wider picture. `resume` has no size limit: the summary, brief and checkpoint come whole; `context.shared_omitted` = shared notes beyond the first 100 rows (use `recall`/`graph` for them). Grandchild: child does the same handoff under its zone; inheritance is automatic, don't re-link what an ancestor already shares.
+- Side effects: `summarize` closes the task (`done` unless `status` given; `close=false` only refreshes the summary) and reports checklist items left open. A summary carries `freshness.stale`: true = something changed under it (or it was never reviewed) since the last `summarize`; re-summarize after changes, and treat a stale summary as a lead, not as fact. `report_ids` = detail notes it points to; `expected_change_version` guards against summarizing over concurrent work.
+- Subagent brief contract: zone id + default scope + objective + done-criteria + "start with `resume task=<zone>`"; then `find under` as needed. Return upward = written-note ids + one-line verdict; state any necessary cross-zone reads/writes and why, never raw dumps. Tick own checklist items; `checkpoint(task=<zone>)` before a deadline/handoff so a replacement agent resumes where it stopped.
 - Split: on-disk deliverables (reports/plans/evidence) = human output + recovery source; pentacore = operational memory (checkpoints, checklists, entity statuses, zone summaries). Never duplicate reports into notes; summaries point at paths.
 
 ## Other agents
@@ -110,4 +128,4 @@ Verify writes: `upsert_entity` must return outcome+id; malformed batched `tool_c
 
 ## Common mistakes
 
-No `resume` -> redo finished work. Tick in chat not pentacore. Close step without summarize / summary only-lists-wins. Guess without confidence. Checkpoint without `task`. Vague bodies `find` can't match. 40 items as 40 notes (-> entities). Holding/retrying claims. Duplicating reports into notes. Omitting `project`.
+No `resume` -> redo finished work. Tick in chat not pentacore. Close step without summarize / summary only-lists-wins. Guess without confidence. Checkpoint without `task`. Vague bodies `find` can't match. Walking every zone without a task reason. Creating a child that repeats its parent's brief. Closing without the self-check. Editing another zone without a concrete need or without recording why. 40 items as 40 notes (-> entities). Holding/retrying claims. Duplicating reports into notes. Omitting `project`. Handing a subagent your history instead of zone id + `uses`.
