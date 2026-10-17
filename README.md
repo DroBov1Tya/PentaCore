@@ -1,40 +1,88 @@
 # pentacore
 
-Persistent working memory for AI agents, served over the [Model Context Protocol](https://modelcontextprotocol.io).
+A quest log for AI agents, served over the [Model Context Protocol](https://modelcontextprotocol.io).
 
-An agent without memory goes in circles: it retries what already failed, loses its plan when the context is compacted, and scatters notes across scratch files nobody reads again. pentacore gives it one place to keep all of that, and to find it again by word, by field or by meaning.
+An agent without memory goes in circles: it retries what already failed, loses its plan when the context is compacted, and cannot say what was done last week. pentacore is where it writes down what it set out to do, what it tried, what it found and what is left, and where the next session, or the next model, picks that up.
 
-It is a tool, not a manager. It stores what it is given and returns what is asked for. It never plans, ranks work or tells the agent what to do next.
+It is a tool, not a manager. It stores what it is given and returns what is asked for.
 
-- One local binary, no services to run. Data lives in a single directory.
+- One local binary, one encrypted SQLite file. No services to run.
 - Built on the official Rust MCP SDK ([`rmcp`](https://github.com/modelcontextprotocol/rust-sdk)).
 - Shared by any number of agents and projects at once.
 
 ## What it stores
 
-| Store | Holds | Found by | Backed by |
-|---|---|---|---|
-| **Notes** | Narrative specifics: goals, steps, attempts and their outcomes, facts, decisions, open questions | Exact words (`find`) | SQLite + FTS5 |
-| **Entities** | Operational state: the things being worked on, as structured records with a status, a confidence, attributes and named checks | Field filters (`query_entities`) | SQLite + JSON1 |
-| **Concepts** | Generalised, reusable knowledge | Meaning (`search_concepts`) | LanceDB + local embeddings |
+| Store | Holds | Found by |
+|---|---|---|
+| **Notes** | Goals, steps, attempts and their outcomes, facts, decisions, open questions, lessons | Words and meaning (`recall`) |
+| **Entities** | Many things of one kind (hosts, endpoints, files), each with a status, attributes and named checks | Field filters (`query_entities`) |
 
-Notes form a tree through `parent` and a graph through typed links, which is how a goal is broken down and tracked. Entities form their own tree and graph. A note can point at the entity it is about, so the narrative stays attached to the state.
+Notes form a tree through `parent` and a graph through typed links, which is how a goal is broken down and tracked. A note can point at the entity it is about.
 
-The split matters. "Show every endpoint that is `discovered`, has confidence above 0.7 and has not been through the `review` check" is a query over fields. It should not depend on how somebody phrased a note.
+The split matters. "Show every host whose `tls` check failed" is a query over fields. It should not depend on how somebody phrased a note.
+
+## How it is meant to be used
+
+**A tree, not a pile.** A task is a goal; its parts are steps beneath it; findings sit beneath the step they belong to. Checking `example.com` is a goal, each subdomain a step.
+
+**Done or not done.** A step carries a `checklist`. An item has two states only, so whoever picks the task up later reads what is left without interpreting anyone's status words. For many similar targets, each target is an entity and each check a `mark_check`, so that "which hosts are left" is one query.
+
+**A summary at every level.** When a step is finished, `summarize` writes its one summary and closes it: `work`, everything that was done, in brief, failures included; `result`, the outcome in detail. A goal gets its own, written from the summaries of its steps. `task_summary` returns a task as its summaries in tree order and nothing else, so "what was checked on `example.com`, and what came of it" costs one call however many notes lie beneath.
+
+**How far to trust a note.** A note carries `confidence` (0 to 1) and `basis`, a sentence or two on what the confidence rests on. They come back with the text wherever the note is read, so the next agent knows how sure the last one was. `confirm` records that a note was checked again and found true; that is the only thing that sets `verified_at`. Confidence does not affect ranking.
+
+**Lessons.** Know-how worth reusing is a note of kind `lesson`: the problem, what was found, how it was checked, whether it was confirmed, what was done. When a later, better check reaches a different conclusion, the lesson is updated; the earlier text stays as a revision and searches return only the current one.
+
+**Handing work down.** A lead agent gives part of the work to another agent as a step: the brief goes in its body, and the notes the other agent needs are linked from the step with `uses`. A note a task uses is context for that task and for every task beneath it, so a scope decision linked from the goal reaches every sub-agent at any depth, and a finding linked from one step reaches only the work under that step. The other agent is told only the step's id and starts with `resume task=<id>`: the reply's `context` holds the shared notes, nearest first, with their confidence and basis, followed by the tasks above with their bodies. A shared note that a newer one supersedes or contradicts names it in `superseded_by` or `contradicted_by`, as in `recall`; a dropped one is left out. One call, within the size budget, instead of the lead's whole conversation; `budget.omitted` counts what did not fit. Results travel back up as summaries.
+
+**Search before experimenting.** The instructions the server sends tell the agent to look for earlier work first.
 
 ## Install
 
-Requires Rust 1.88 or newer.
+### Prebuilt binaries
+
+Download the archive for your platform from [Releases](https://github.com/DroBov1Tya/PentaCore/releases/latest):
+
+| Platform | Archive |
+|---|---|
+| Linux x86_64 | `pentacore-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `pentacore-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS arm64 (Apple silicon) | `pentacore-<version>-aarch64-apple-darwin.tar.gz` |
+| Windows x86_64 | `pentacore-<version>-x86_64-pc-windows-msvc.zip` |
+| Windows arm64 | `pentacore-<version>-aarch64-pc-windows-msvc.zip` |
+
+Each archive holds the `pentacore` binary (`pentacore.exe` on Windows), this README, the license, the agent usage guide in `skills/` and `.env.example`. The binary is self-contained: SQLCipher and ONNX Runtime are linked in. Unpack it wherever you keep tools.
 
 ```sh
-git clone <this repository>
-cd pentacore
-cargo build --release
+tar -xzf pentacore-<version>-aarch64-apple-darwin.tar.gz
+```
+
+Platform notes:
+
+- **Linux.** Built on Ubuntu 24.04 and needs a glibc at least as new: Ubuntu 24.04, Debian 13, Fedora 40 or later. On older systems, build from source or use [Docker](#run-in-docker).
+- **macOS.** The binary is not signed. If it was downloaded with a browser, macOS quarantines it; clear the flag once: `xattr -d com.apple.quarantine pentacore`. Intel Macs are not supported: ONNX Runtime ships no binaries for them.
+- **Windows.** Needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (2015 to 2022), which most systems already have.
+
+Every release carries `SHA256SUMS`, a CycloneDX SBOM (`pentacore.cdx.json`) and a signed build provenance attestation. To check a download:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify pentacore-<version>-<target>.tar.gz --repo DroBov1Tya/PentaCore
+```
+
+### From source
+
+Requires Rust 1.88 or newer, and Perl and `make` for the bundled OpenSSL (on Windows, [Strawberry Perl](https://strawberryperl.com) and the MSVC build tools). Builds for the targets above only, for the same reason as the binaries.
+
+```sh
+git clone https://github.com/DroBov1Tya/PentaCore.git
+cd PentaCore
+cargo build --release --locked
 ```
 
 The binary is `target/release/pentacore`. Copy it wherever you keep tools.
 
-The first use of a concept tool downloads the embedding model (all-MiniLM-L6-v2, about 90 MB) into the data directory. Notes and entities work without it.
+The first `recall` downloads the embedding model (all-MiniLM-L6-v2, about 90 MB) into the data directory. Everything works without it, by words.
 
 ## Connect an agent
 
@@ -61,7 +109,31 @@ claude mcp add pentacore -- /absolute/path/to/pentacore
 }
 ```
 
+On Windows the command is the full path to `pentacore.exe`, with backslashes doubled in JSON: `"C:\\Tools\\pentacore\\pentacore.exe"`.
+
 Then give the agent the usage guide in [`skills/pentacore-memory/SKILL.md`](skills/pentacore-memory/SKILL.md). For Claude Code, copy that directory into `~/.claude/skills/` or the project's `.claude/skills/`. For other agents, include its text in the system prompt.
+
+## Run in Docker
+
+```sh
+docker build -t pentacore:0.7.1 .
+```
+
+MCP runs over stdio, so the client starts the container. The memory lives in a named volume:
+
+```json
+{
+  "mcpServers": {
+    "pentacore": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "pentacore-data:/data",
+               "-e", "PENTACORE_PROJECT=my-project", "pentacore:0.7.1"]
+    }
+  }
+}
+```
+
+With Compose, the command is `docker compose run --rm -T pentacore` (see [`docker-compose.yml`](docker-compose.yml)); it adds a read-only root filesystem and drops all capabilities. The container runs as an unprivileged user. Set `PENTACORE_PROJECT` explicitly: inside a container there is no working directory to name the project after. The first `recall` needs network access to download the embedding model into the volume.
 
 ## Configuration
 
@@ -69,8 +141,9 @@ Every variable is optional.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PENTACORE_HOME` | `~/.pentacore` | Data directory. Created with mode `0700`. |
+| `PENTACORE_HOME` | `~/.pentacore` | Data directory. `~/` means the user's home. Any other relative path is taken from the executable's directory, not the working directory. Created with mode `0700` on Linux and macOS; on Windows it inherits the permissions of its parent directory. |
 | `PENTACORE_PROJECT` | name of the working directory | Project used when a call names none. |
+| `PENTACORE_TOOLS` | `core` | `core` lists the 16 everyday tools to the agent; `full` lists all 24. Every tool can be called either way. |
 | `PENTACORE_HTTP_ADDR` | unset (HTTP off) | Loopback address and port for the HTTP API. |
 | `PENTACORE_HTTP_TOKEN` | unset | Bearer token for the HTTP API, at least 32 characters. Required when the address is set. |
 | `RUST_LOG` | `warn,pentacore=info` | Log filter. Logs go to stderr. |
@@ -79,96 +152,119 @@ Variables can also come from a `.env` file **beside the executable**; see [`bin/
 
 ## Tools
 
-**Notes**
+Listed by default (`core`):
 
 | Tool | Does |
 |---|---|
-| `note` | Record a goal, step, attempt, fact, decision or question. Reports similar existing notes. |
-| `update_note` | Change fields, move under another parent, or `append` to the body. |
-| `get_note` | One note in full, with children and links. |
-| `find` | Full-text search. Falls back from exact words to word prefixes to any word. |
-| `link` / `unlink` | Typed links: `depends_on`, `supports`, `contradicts`, `answers`, `supersedes`, `relates_to`. |
-| `goal_graph` | The tree beneath a note, with every link touching it. |
-| `forget_note` | Delete a note, or a subtree with `recursive`. |
-
-**Entities**
-
-| Tool | Does |
-|---|---|
-| `upsert_entity` | Create or update by `(project, type, key)`. Merges attributes; an identical write changes nothing. |
+| `note` | Record a goal, step, attempt, fact, decision, question or lesson, with confidence and basis. |
+| `update_note` | Change a note. Each change is a new revision; `expected_revision` refuses a write over someone else's change. |
+| `get_note` | One note in full, with children, links and checklist. |
+| `recall` | Search notes and entities, most relevant first, repeats shown once. `kind` narrows it, e.g. to lessons. |
+| `link` | Typed links between notes: `depends_on`, `supports`, `contradicts`, `answers`, `supersedes`, `relates_to`, `uses`. |
+| `graph` | The tree beneath a note or an entity. |
+| `resume` | State of a project, or with `task` what is needed to continue that task, including the context handed down to it, within a size budget. |
+| `checkpoint` | Save where the work stands mid-way, for the project or one task. |
+| `checklist` | Items on a note that are done or not done. |
+| `summarize` | Close a goal or step with its one summary. |
+| `task_summary` | Read a task from its summaries alone. |
+| `confirm` | Record that a note was checked again and still holds. |
+| `upsert_entity` | Create or update by `(project, type, key)`; attributes are merged. |
 | `query_entities` | Filter, sort, count and group by column, `attrs.<name>` or `check.<name>`. |
-| `mark_check` | Record the result of a named check. |
-| `claim_entity` / `release_entity` | Reserve an entity for one agent, with a timeout. |
+| `mark_check` | Record the result of one or several named checks on an entity. |
+| `forget` | Purge a note or an entity with every revision. |
+
+Listed with `PENTACORE_TOOLS=full`:
+
+| Tool | Does |
+|---|---|
+| `find` | Search notes by exact words, with filters. |
+| `get_entity` | One entity with checks, children, links, notes about it and its latest events. |
+| `claim_entity` | Reserve an entity for one agent, with a timeout; `release: true` gives it up. |
 | `link_entities` | Named links between entities. |
-| `entity_graph` | The tree beneath an entity, with its links. |
-| `get_entity` | One entity with checks, children, links, notes about it and recent history. |
-| `forget_entity` | Delete an entity, or a subtree with `recursive`. |
+| `history` | Who changed what and when, for a record, a task or a project. Paged by cursor. |
+| `get_revision` | The state a note had at an earlier revision. |
+| `redact_history` | Purge the earlier revisions of a note, keeping its current state. |
+| `review` | What needs attention: stalled tasks, open questions, tasks closed without a summary, open checklist items, low-confidence notes. |
 
-**Concepts**
+Each tool carries a JSON Schema and MCP annotations (`readOnlyHint`, `destructiveHint`).
 
-| Tool | Does |
-|---|---|
-| `memorize_concept` | Store a concept. Reports existing ones that say nearly the same. |
-| `search_concepts` | Semantic search. |
-| `update_concept` / `forget_concept` | Maintain concepts. |
+## History
 
-**Across stores**
+Every change is written to a journal in the same transaction: the record, the kind of change, the names of the fields, and the `author`, `run` and `task` the caller gave. These are labels, not credentials. The journal never holds the text of a record.
 
-| Tool | Does |
-|---|---|
-| `recall` | Search notes and concepts in one call. |
-| `checkpoint` | Save a summary of where the work stands. |
-| `resume` | Current state of a project: open goals, active steps, open questions, recent notes, entity counts, last checkpoint. |
+Notes keep their full state after each change, confidence and basis included, as numbered revisions. Entities keep their events, with old and new values.
 
-Each tool carries a JSON Schema and MCP annotations (`readOnlyHint`, `destructiveHint`), so a client can show what a call will do before making it.
+What existed before 0.7 has no recorded history, and none is invented. On upgrade, the state of each note becomes revision 1 with origin `legacy_baseline`; entity events and checkpoints already logged are copied into the journal with origin `backfilled`.
+
+## Keeping and purging
+
+| | What it does | What remains |
+|---|---|---|
+| **Drop** | `status: dropped` on a note. For what was once true. | Everything; the note ranks lower in `recall`. Reversible. |
+| **Retention** | Automatic. The 50 latest revisions of a note and the 20 latest checkpoints per task (and per project) are kept. | Journal entries of the dropped revisions, without text. |
+| **Redact** | `redact_history`: removes all earlier revisions of one note. For a secret that was edited out. | The current state and the journal entries. |
+| **Purge** | `forget`: removes the record, its revisions, checklist, events, vector, and a task's checkpoints. For what should never have been stored. | One journal entry per record: its id, kind and project, who purged it and when. |
+
+"Removes" means from the SQLite file and its write-ahead log, which is emptied after a purge or redaction. Backups and filesystem snapshots are outside its reach. Nothing is purged automatically.
+
+## Search
+
+`recall` scores each candidate by how much of the query its words cover (rare words weigh more; another form of a word counts for less than the exact word) and, when the model is loaded, by closeness in meaning. Either is enough; agreement adds a little. A dropped or superseded note is scaled down. Freshness adds at most 6% and belonging to the given `task` 20%.
+
+Notes are folded as repeats when their words nearly coincide, or, with the model, when they are close in meaning and share a good part of their words.
+
+The vector of a note is stored beside it in SQLite and compared by a full scan, which is fast for tens of thousands of notes and has not been measured beyond that. The embedding model is English-only, so search by meaning is used for text in the Latin alphabet only; the instructions tell agents to write records and queries in English, in ASCII. That is guidance, not validation.
 
 ## Example
 
-Break a goal down and record what happened:
-
 ```json
-{"name": "note", "arguments": {"kind": "goal", "title": "Move session storage to Redis"}}
-{"name": "note", "arguments": {"kind": "step", "title": "Replace the in-memory store", "parent": 1, "status": "active"}}
-{"name": "note", "arguments": {"kind": "attempt", "title": "Swap the store behind the existing trait", "parent": 2,
-  "status": "failed", "body": "Trait requires Sync; redis::Connection is not. Error E0277 in src/session/store.rs:41"}}
+{"name": "note", "arguments": {"kind": "goal", "title": "Check example.com"}}
+{"name": "note", "arguments": {"kind": "step", "title": "Check a.example.com", "parent": 1}}
+{"name": "checklist", "arguments": {"note": 2, "add": ["TLS configuration", "Open ports"]}}
+{"name": "note", "arguments": {"kind": "fact", "title": "TLS 1.0 enabled on a.example.com", "parent": 2,
+  "body": "Handshake accepts TLSv1.0 on port 443.", "confidence": 0.9, "basis": "two independent scans"}}
+{"name": "checklist", "arguments": {"note": 2, "done": [1, 2]}}
+{"name": "summarize", "arguments": {"task": 2, "result": "TLS 1.0 is enabled on port 443; no other ports open.",
+  "work": "TLS and ports checked."}}
 ```
 
-Track what is being worked through, and ask what is left:
-
-```json
-{"name": "upsert_entity", "arguments": {"type": "endpoint", "key": "POST /login", "status": "discovered",
-  "confidence": 0.9, "attrs": {"auth": false, "handler": "auth::login"}}}
-{"name": "mark_check", "arguments": {"id": 1, "name": "review", "result": "pass"}}
-{"name": "query_entities", "arguments": {"type": "endpoint", "where": [
-  {"field": "status", "op": "eq", "value": "discovered"},
-  {"field": "confidence", "op": "gt", "value": 0.7},
-  {"field": "check.review", "op": "is_null"}]}}
-```
-
-Pick up again in a new session:
+In a later session:
 
 ```json
 {"name": "resume"}
-{"name": "find", "arguments": {"query": "E0277 session store"}}
+{"name": "task_summary", "arguments": {"task": 1}}
+{"name": "recall", "arguments": {"query": "TLS 1.0"}}
 ```
+
+Handing a step to a sub-agent, with a scope decision shared from the goal and what was found on `a.example.com` (summary note 4, written by `summarize` above):
+
+```json
+{"name": "note", "arguments": {"kind": "decision", "title": "Only ports 443 and 8443 are in scope"}}
+{"name": "link", "arguments": {"src": 1, "dst": 5, "kind": "uses"}}
+{"name": "note", "arguments": {"kind": "step", "title": "ZONE b.example.com", "parent": 1,
+  "body": "Check TLS on b.example.com. Report weak protocols and ciphers.",
+  "links": [{"kind": "uses", "to": 4}]}}
+```
+
+The sub-agent is told `zone=6` and starts with `{"name": "resume", "arguments": {"task": 6}}`. Its `context` lists summary 4, then decision 5, and goal 1 above it.
 
 ## Projects and several agents
 
 Everything belongs to a project. Reads default to the current project, and `"project": "*"` reads across all of them, so a lesson learned in one place can be found from another.
 
-Several agents can write to the same project at the same time. Two mechanisms keep them out of each other's way:
+Several agents can write to the same project at the same time:
 
 - **Claims.** `claim_entity` returns a secret `claim_id`. Until the claim expires or is released, only calls that present it can change the entity. Of two simultaneous claims exactly one wins.
-- **Authors.** Writing tools take an optional `author` label, recorded with the note, entity, check or event. It is informational and grants nothing.
+- **Revisions.** `update_note` with `expected_revision` is refused if the note changed in between.
 
 A project is a namespace, not a security boundary: any agent connected to the same data directory can read and change any project. Use separate `PENTACORE_HOME` directories for memories that must not mix.
 
 ## HTTP API
 
-Off by default. Set both `PENTACORE_HTTP_ADDR` and `PENTACORE_HTTP_TOKEN` to turn it on. It exposes the same tools as MCP:
+Off by default. Set both `PENTACORE_HTTP_ADDR` and `PENTACORE_HTTP_TOKEN` to turn it on. It exposes every tool:
 
 ```sh
-curl -s http://127.0.0.1:8082/v1/tools/find \
+curl -s http://127.0.0.1:8082/v1/tools/recall \
   -H "Authorization: Bearer $PENTACORE_HTTP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query": "session store"}'
@@ -192,28 +288,27 @@ What is written to the memory is later read by an agent as context. An unauthori
 - **No caller text becomes SQL.** Values are bound parameters. Full-text queries are quoted, so FTS5 operators are plain text. Entity queries are assembled from an allowlist of fields and operators.
 - **Bounded everywhere.** Message size, body size, result counts, tree depth and attribute counts all have limits.
 - **Errors do not leak internals.** Callers see a short message; causes go to the log.
-- **Data at rest** sits in a `0700` directory. Deleted rows are overwritten (`secure_delete`).
+- **Data at rest** sits in a `0700` directory (on Windows, one that inherits its parent's permissions), in `brain.db`, encrypted with SQLCipher. Deleted rows are overwritten (`secure_delete`), and the write-ahead log is emptied after a purge.
 
 Known limits:
 
+- The database key is a constant compiled into the binary, obfuscated. It keeps the file from being opened by other tools and by anyone who has the file alone. It does not protect the data from someone who has the binary, or the source: the key can be recovered from either. A binary built with a different key cannot open the file.
+
 - Stored text is not sanitised. An agent that saves untrusted text will read it back later; the usage guide tells agents to treat recalled memory as data, not instructions.
+- `author`, `run` and `task` are unverified labels, and so are `confidence` and `basis`: any caller can set them. Their earlier values stay in the revisions.
+- `redact_history` covers note revisions only. Earlier attribute values of an entity stay in its events until the entity is purged, and a checkpoint saved without a task leaves only when 20 newer ones have replaced it.
+- If another process holds the database open for reading during a purge, the write-ahead log is emptied at a later purge instead; a warning is logged.
+- The journal grows without bound.
 - The HTTP API has no rate limiting and no header-read timeout.
-- LanceDB keeps old table versions, so a forgotten concept remains recoverable from the data directory.
 - Claims prevent accidental collisions between cooperating agents. They do not stop a hostile process that can open the database file.
+- Concepts kept in LanceDB by releases up to 0.5 are not migrated; 0.7 does not read that directory.
 
 ## Development
 
 ```sh
-cargo test                       # unit and integration tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cargo audit
-```
-
-One test needs the embedding model and is skipped by default:
-
-```sh
-cargo test -- --include-ignored
 ```
 
 Layout:
@@ -223,6 +318,7 @@ src/
   main.rs, config.rs        entry point and environment
   app.rs                    wiring and shutdown
   app/tools.rs              the tool layer both transports call
+  app/tools/describe.rs     tool descriptions and JSON Schemas
   app/server/mcp.rs         MCP over stdio (rmcp)
   app/server/http.rs        optional HTTP transport
   app/memory/
@@ -230,11 +326,28 @@ src/
     db.rs, migrations/      SQLite connection, schema, tree helpers
     notes.rs                notes, links, full-text search, checkpoints
     entities.rs             entities, checks, claims, structured queries
-    concepts.rs             LanceDB and embeddings
+    journal.rs              journal, revisions, history, redaction
+    tasks.rs                resuming one task within a budget
+    practices.rs            checklists, task summaries, confirm, review
+    words.rs                matching and scoring by words
+    index.rs                embeddings and search by meaning
+    recall.rs               ranking, folding repeats
 skills/pentacore-memory/    usage guide for agents
+.github/workflows/release.yml  release builds
 ```
 
-The SQLite schema is versioned through `PRAGMA user_version`; a database from an older release is upgraded in place on start.
+### Releasing
+
+Set the new `version` in `Cargo.toml`, commit, then push a tag of the same name with a `v`:
+
+```sh
+git tag v0.8.0
+git push origin v0.8.0
+```
+
+The `release` workflow builds every target on its own native runner, starts each binary and checks that it answers an MCP `initialize`, then publishes a GitHub release with the archives, `SHA256SUMS`, the SBOM and a build provenance attestation. It refuses a tag that does not match `Cargo.toml`. Run it by hand from the Actions tab to build without publishing; the archives are then kept as run artifacts.
+
+The database file is `brain.db`. A plain `brain.sqlite` left by a release up to 0.7.0 is copied into an encrypted `brain.db` on the first start and then upgraded there; the old file is only read and stays where it was, as a backup you can delete. The schema is versioned through `PRAGMA user_version` and upgraded in one transaction. A build refuses a database upgraded by a newer one: once a build that adds `uses` (schema version 4) has opened the file, builds made before it, release 0.7.1 among them, can no longer open it.
 
 ## License
 

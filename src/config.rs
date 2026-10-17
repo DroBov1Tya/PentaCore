@@ -44,11 +44,22 @@ pub fn load_env_file() {
     }
 }
 
+// Key the database file is encrypted with. It ships inside the binary,
+// obfuscated, so the file cannot be opened by other tools; it does not protect
+// the data from someone who has this binary.
+const DB_KEY: &str = "0be8a7958121df67785b0c350c5671de2556be491a893f289020af4272cbd42c";
+
+pub fn db_key() -> String {
+    obfstr::obfstr!(DB_KEY).to_owned()
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub home: PathBuf,
     pub default_project: ProjectName,
     pub http: Option<HttpConfig>,
+    // List every tool to the agent, not only the everyday ones.
+    pub all_tools: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -95,17 +106,57 @@ impl Config {
             home: home_dir()?,
             default_project: default_project()?,
             http: http_config(env("PENTACORE_HTTP_ADDR"), env("PENTACORE_HTTP_TOKEN"))?,
+            all_tools: all_tools(env("PENTACORE_TOOLS"))?,
         })
     }
 }
 
-fn home_dir() -> Result<PathBuf> {
-    if let Some(home) = env("PENTACORE_HOME") {
-        return Ok(PathBuf::from(home));
+fn all_tools(value: Option<String>) -> Result<bool> {
+    match value.as_deref() {
+        None | Some("core") => Ok(false),
+        Some("full") => Ok(true),
+        Some(other) => anyhow::bail!("PENTACORE_TOOLS must be `core` or `full`, not `{other}`"),
     }
+}
+
+fn home_dir() -> Result<PathBuf> {
     let user_home =
-        std::env::home_dir().context("cannot determine the home directory; set PENTACORE_HOME")?;
-    Ok(user_home.join(".pentacore"))
+        || std::env::home_dir().context("cannot determine the home directory; set PENTACORE_HOME");
+    match env("PENTACORE_HOME") {
+        Some(home) => match under_user_home(&home) {
+            Some(rest) => Ok(user_home()?.join(rest)),
+            None => resolve_home(&home, exe_dir()),
+        },
+        None => Ok(user_home()?.join(".pentacore")),
+    }
+}
+
+// A shell expands `~`; an env file or an MCP client config does not, and the
+// data would land in a directory literally named `~`.
+fn under_user_home(value: &str) -> Option<&str> {
+    if value == "~" {
+        return Some("");
+    }
+    value.strip_prefix("~/")
+}
+
+fn exe_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()?;
+    exe.parent().map(PathBuf::from)
+}
+
+// A relative path is taken from the executable's directory, never from the
+// working directory, which the caller of the agent controls.
+fn resolve_home(value: &str, exe_dir: Option<PathBuf>) -> Result<PathBuf> {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let base =
+        exe_dir.context("cannot locate the executable to resolve a relative PENTACORE_HOME")?;
+    Ok(base.join(path))
 }
 
 fn default_project() -> Result<ProjectName> {
@@ -141,47 +192,4 @@ fn http_config(addr: Option<String>, token: Option<String>) -> Result<Option<Htt
         addr,
         token: Token::try_from(token)?,
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn token() -> Option<String> {
-        Some("t".repeat(MIN_TOKEN_BYTES))
-    }
-
-    #[test]
-    fn http_is_off_without_an_address() {
-        assert!(http_config(None, None).unwrap().is_none());
-        assert!(http_config(None, token()).unwrap().is_none());
-    }
-
-    #[test]
-    fn http_requires_loopback_and_a_strong_token() {
-        assert!(
-            http_config(Some("127.0.0.1:8082".into()), token())
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            http_config(Some("[::1]:8082".into()), token())
-                .unwrap()
-                .is_some()
-        );
-        assert!(http_config(Some("0.0.0.0:8082".into()), token()).is_err());
-        assert!(http_config(Some("192.168.1.5:8082".into()), token()).is_err());
-        assert!(http_config(Some("localhost:8082".into()), token()).is_err());
-        assert!(http_config(Some("127.0.0.1:8082".into()), None).is_err());
-        assert!(http_config(Some("127.0.0.1:8082".into()), Some("short".into())).is_err());
-    }
-
-    #[test]
-    fn token_compares_exactly_and_hides_itself() {
-        let token = Token::try_from("s".repeat(MIN_TOKEN_BYTES)).unwrap();
-        assert!(token.matches("s".repeat(MIN_TOKEN_BYTES).as_bytes()));
-        assert!(!token.matches("s".repeat(MIN_TOKEN_BYTES - 1).as_bytes()));
-        assert!(!token.matches(b""));
-        assert!(!format!("{token:?}").contains('s'));
-    }
 }

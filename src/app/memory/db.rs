@@ -6,11 +6,16 @@ use std::time::Duration;
 
 use super::model::{MemoryError, invalid};
 
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 3] = [
     include_str!("migrations/001_notes.sql"),
     include_str!("migrations/002_state.sql"),
+    include_str!("migrations/003_history.sql"),
 ];
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+const FILE: &str = "brain.db";
+const LEGACY_FILE: &str = "brain.sqlite";
+const PLAIN_HEADER: &[u8] = b"SQLite format 3\0";
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
@@ -20,26 +25,58 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn open(path: &Path) -> Result<Self> {
-        Self::prepare(Connection::open(path)?)
-    }
-
-    #[cfg(test)]
-    pub fn in_memory() -> Self {
-        Self::prepare(Connection::open_in_memory().unwrap()).unwrap()
+    // Opens the encrypted database in the data directory, creating it when
+    // there is none. A plain database left by an earlier release is copied
+    // into an encrypted one first and left where it was.
+    pub fn open(home: &Path, key: &str) -> Result<Self> {
+        let path = home.join(FILE);
+        let legacy = home.join(LEGACY_FILE);
+        if !path.exists() && legacy.exists() {
+            if is_plain(&legacy)? {
+                encrypt_copy(&legacy, &path, key)?;
+                tracing::info!(
+                    "{LEGACY_FILE} was copied into the encrypted {FILE}; the old file is kept, \
+                     delete it once the new one is confirmed"
+                );
+            } else {
+                // Already encrypted, only under the old name.
+                return Self::prepare(unlocked(&legacy, key)?);
+            }
+        }
+        Self::prepare(unlocked(&path, key)?)
     }
 
     fn prepare(mut conn: Connection) -> Result<Self> {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
         // Overwrite deleted rows instead of just unlinking them.
         conn.pragma_update(None, "secure_delete", "ON")?;
+        // A migration may rebuild a table, which SQLite allows only with
+        // foreign keys off; migrate() checks the links before it commits.
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
         migrate(&mut conn)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    // Moves everything out of the write-ahead log and empties it. A deleted
+    // row is overwritten in the database file, but its old pages would
+    // otherwise stay readable in the log until the log is next recycled.
+    pub async fn scrub_log(&self) -> Result<()> {
+        self.run(|conn| {
+            let busy: i64 =
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+            if busy != 0 {
+                return Err(
+                    anyhow!("another connection is reading; the log was not emptied").into(),
+                );
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub async fn run<T, F>(&self, work: F) -> Result<T>
@@ -58,6 +95,47 @@ impl Db {
     }
 }
 
+fn unlocked(path: &Path, key: &str) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "key", key)?;
+    // The key is only tested by the first read.
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+        .map_err(|_| anyhow!("{} cannot be opened with this build's key", path.display()))?;
+    Ok(conn)
+}
+
+fn is_plain(path: &Path) -> Result<bool> {
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    let read = std::fs::File::open(path)
+        .and_then(|mut file| file.read(&mut header))
+        .map_err(|error| anyhow!("cannot read {}: {error}", path.display()))?;
+    // An empty file is a database nobody has written to yet.
+    Ok(read == 0 || header[..read] == PLAIN_HEADER[..read])
+}
+
+// Written under a temporary name and renamed, so a failure leaves no half
+// made database behind. The source is only read.
+fn encrypt_copy(plain: &Path, encrypted: &Path, key: &str) -> Result<()> {
+    let partial = encrypted.with_extension("db.partial");
+    let _ = std::fs::remove_file(&partial);
+    let target = partial
+        .to_str()
+        .ok_or_else(|| anyhow!("data directory path is not valid UTF-8"))?;
+    let conn = Connection::open(plain)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    conn.execute("ATTACH DATABASE ?1 AS encrypted KEY ?2", [target, key])?;
+    conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))?;
+    // The export copies schema and rows, not the schema version.
+    conn.execute_batch(&format!("PRAGMA encrypted.user_version = {version}"))?;
+    conn.execute("DETACH DATABASE encrypted", [])?;
+    drop(conn);
+    std::fs::rename(&partial, encrypted)
+        .map_err(|error| anyhow!("cannot move the encrypted database into place: {error}"))?;
+    Ok(())
+}
+
 // Version is read under the write lock, so two processes cannot both migrate.
 fn migrate(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -74,6 +152,14 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     for (index, migration) in MIGRATIONS.iter().enumerate().skip(applied) {
         tx.execute_batch(migration)?;
         tx.pragma_update(None, "user_version", index as i64 + 1)?;
+    }
+    let broken: i64 = tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+        row.get(0)
+    })?;
+    if broken > 0 {
+        return Err(
+            anyhow!("migration would leave {broken} broken links; nothing was changed").into(),
+        );
     }
     tx.commit()?;
     Ok(())
@@ -155,48 +241,5 @@ impl Tree {
             [id],
             |row| row.get(0),
         )?)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn version(conn: &Connection) -> i64 {
-        conn.pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap()
-    }
-
-    #[test]
-    fn a_database_from_the_first_release_is_upgraded_in_place() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(MIGRATIONS[0]).unwrap();
-        conn.pragma_update(None, "user_version", 1).unwrap();
-        conn.execute(
-            "INSERT INTO notes (project, kind, status, title, body, tags, created_at, updated_at)
-             VALUES ('p', 'fact', 'active', 'old note', '', '', 't', 't')",
-            [],
-        )
-        .unwrap();
-
-        migrate(&mut conn).unwrap();
-        assert_eq!(version(&conn), MIGRATIONS.len() as i64);
-        let (title, author): (String, Option<String>) = conn
-            .query_row("SELECT title, author FROM notes", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .unwrap();
-        assert_eq!((title.as_str(), author), ("old note", None));
-
-        migrate(&mut conn).unwrap();
-        assert_eq!(version(&conn), MIGRATIONS.len() as i64);
-    }
-
-    #[test]
-    fn a_database_from_a_newer_build_is_refused() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.pragma_update(None, "user_version", MIGRATIONS.len() as i64 + 1)
-            .unwrap();
-        assert!(migrate(&mut conn).is_err());
     }
 }

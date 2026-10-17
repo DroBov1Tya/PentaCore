@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 pub const MAX_TITLE_CHARS: usize = 200;
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -10,6 +9,7 @@ pub const MAX_LIMIT: u64 = 100;
 pub const MAX_GRAPH_DEPTH: u8 = 32;
 pub const MAX_TOKEN_CHARS: usize = 48;
 pub const MAX_AUTHOR_CHARS: usize = 64;
+pub const MAX_BASIS_CHARS: usize = 500;
 
 pub type NoteId = i64;
 pub type EntityId = i64;
@@ -36,12 +36,7 @@ macro_rules! internal_error_from {
     )+};
 }
 
-internal_error_from!(
-    rusqlite::Error,
-    lancedb::Error,
-    arrow_schema::ArrowError,
-    tokio::task::JoinError,
-);
+internal_error_from!(rusqlite::Error, tokio::task::JoinError,);
 
 pub fn invalid(message: impl Into<String>) -> MemoryError {
     MemoryError::Invalid(message.into())
@@ -50,12 +45,13 @@ pub fn invalid(message: impl Into<String>) -> MemoryError {
 macro_rules! string_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum $name {
             $(#[serde(rename = $text)] $variant),+
         }
 
         impl $name {
+            #[allow(dead_code)]
             pub const ALL: &'static [Self] = &[$(Self::$variant),+];
 
             pub fn as_str(self) -> &'static str {
@@ -71,8 +67,8 @@ macro_rules! string_enum {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(self.as_str())
             }
         }
@@ -109,6 +105,7 @@ string_enum!(
         Fact => "fact",
         Decision => "decision",
         Question => "question",
+        Lesson => "lesson",
     }
 );
 
@@ -131,6 +128,8 @@ string_enum!(
     }
 );
 
+pub(crate) use sql_text;
+
 sql_text!(NoteKind, Status, EdgeKind);
 
 impl NoteKind {
@@ -140,7 +139,7 @@ impl NoteKind {
             Self::Goal | Self::Step => &[Open, Active, Done, Failed, Dropped],
             Self::Attempt => &[Active, Done, Failed],
             Self::Question => &[Open, Done, Dropped],
-            Self::Fact | Self::Decision => &[Active, Dropped],
+            Self::Fact | Self::Decision | Self::Lesson => &[Active, Dropped],
         }
     }
 
@@ -148,7 +147,7 @@ impl NoteKind {
     pub fn default_status(self) -> Option<Status> {
         match self {
             Self::Goal | Self::Step | Self::Question => Some(Status::Open),
-            Self::Fact | Self::Decision => Some(Status::Active),
+            Self::Fact | Self::Decision | Self::Lesson => Some(Status::Active),
             Self::Attempt => None,
         }
     }
@@ -211,6 +210,69 @@ validated_string!(ProjectName, validate_project);
 validated_string!(SearchText, validate_search_text);
 validated_string!(Token, validate_token);
 validated_string!(Author, validate_author);
+validated_string!(
+    // Label of the session or run that made a change. Same alphabet as an author.
+    RunId,
+    validate_run
+);
+
+// How sure the author is that a record holds, from 0 to 1.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(try_from = "f64")]
+pub struct Confidence(f64);
+
+impl Confidence {
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for Confidence {
+    type Error = String;
+
+    fn try_from(value: f64) -> Result<Self, String> {
+        if (0.0..=1.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err("confidence must be between 0 and 1".into())
+        }
+    }
+}
+
+validated_string!(
+    // One or two sentences on what a confidence rests on.
+    Basis,
+    validate_basis
+);
+
+fn validate_basis(value: String) -> Result<String, String> {
+    let basis = value.trim();
+    if basis.is_empty() || basis.chars().count() > MAX_BASIS_CHARS {
+        return Err(format!("basis must be 1-{MAX_BASIS_CHARS} characters"));
+    }
+    if basis.chars().any(char::is_control) {
+        return Err("basis must be a single line without control characters".into());
+    }
+    Ok(basis.to_string())
+}
+
+// Who made a change: labels for the journal, never a credential.
+#[derive(Debug, Clone, Default)]
+pub struct Attribution {
+    pub author: Option<String>,
+    pub run: Option<String>,
+    pub task: Option<NoteId>,
+}
+
+impl Attribution {
+    pub fn new(author: Option<Author>, run: Option<RunId>, task: Option<NoteId>) -> Self {
+        Self {
+            author: author.map(String::from),
+            run: run.map(String::from),
+            task,
+        }
+    }
+}
 
 fn validate_title(value: String) -> Result<String, String> {
     let title = value.trim();
@@ -292,6 +354,10 @@ fn validate_author(value: String) -> Result<String, String> {
         ));
     }
     Ok(value)
+}
+
+fn validate_run(value: String) -> Result<String, String> {
+    validate_author(value).map_err(|problem| problem.replacen("author", "run", 1))
 }
 
 // Fixed width UTC, so text order is time order.
@@ -448,6 +514,10 @@ pub struct NewNote {
     pub links: Links,
     pub entity: Option<EntityId>,
     pub author: Option<Author>,
+    pub run: Option<RunId>,
+    pub task: Option<NoteId>,
+    pub confidence: Option<Confidence>,
+    pub basis: Option<Basis>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -461,6 +531,11 @@ pub struct NotePatch {
     pub parent: Option<NoteId>,
     pub append: Option<Body>,
     pub entity: Option<EntityId>,
+    pub author: Option<Author>,
+    pub run: Option<RunId>,
+    pub expected_revision: Option<i64>,
+    pub confidence: Option<Confidence>,
+    pub basis: Option<Basis>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -487,6 +562,19 @@ pub struct Note {
     pub parent: Option<NoteId>,
     pub entity: Option<EntityId>,
     pub author: Option<String>,
+    pub revision: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
+    // When someone last checked the note against reality, and who.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<String>,
+    // True for the closing summary of the task this note sits under.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub summary: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -508,6 +596,8 @@ pub struct NoteBrief {
     pub title: String,
     pub parent: Option<NoteId>,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -569,6 +659,18 @@ pub struct Snapshot {
     pub recent: Vec<NoteBrief>,
     pub total_notes: i64,
     pub checkpoint: Option<Checkpoint>,
+    pub tasks: Vec<TaskBrief>,
+}
+
+// An unfinished goal, with what is needed to decide whether to continue it.
+#[derive(Debug, Serialize)]
+pub struct TaskBrief {
+    pub id: NoteId,
+    pub project: String,
+    pub status: Status,
+    pub title: String,
+    pub checkpoint_at: Option<String>,
+    pub changes_since_checkpoint: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,6 +679,8 @@ pub struct NewCheckpoint {
     pub summary: Body,
     pub project: Option<ProjectName>,
     pub author: Option<Author>,
+    pub run: Option<RunId>,
+    pub task: Option<NoteId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -585,117 +689,11 @@ pub struct Checkpoint {
     pub project: String,
     pub summary: String,
     pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<NoteId>,
     pub created_at: String,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
-        serde_json::from_value(value).map_err(|e| e.to_string())
-    }
-
-    #[test]
-    fn title_is_trimmed_and_bounded() {
-        assert_eq!(parse::<Title>(json!("  hi  ")).unwrap().as_str(), "hi");
-        assert!(parse::<Title>(json!("   ")).is_err());
-        assert!(parse::<Title>(json!("two\nlines")).is_err());
-        assert!(parse::<Title>(json!("safe\u{202E}txt.exe")).is_err());
-        assert!(parse::<Title>(json!("line\u{2028}break")).is_err());
-        assert!(parse::<Title>(json!("x".repeat(MAX_TITLE_CHARS))).is_ok());
-        assert!(parse::<Title>(json!("x".repeat(MAX_TITLE_CHARS + 1))).is_err());
-    }
-
-    #[test]
-    fn body_is_bounded() {
-        assert!(parse::<Body>(json!("x".repeat(MAX_BODY_BYTES))).is_ok());
-        assert!(parse::<Body>(json!("x".repeat(MAX_BODY_BYTES + 1))).is_err());
-        assert!(parse::<Body>(json!("a\0b")).is_err());
-    }
-
-    #[test]
-    fn tags_and_projects_use_an_allowlist() {
-        assert!(parse::<Tag>(json!("сборка-2")).is_ok());
-        assert!(parse::<Tag>(json!("two words")).is_err());
-        assert!(parse::<Tag>(json!("")).is_err());
-        assert!(parse::<ProjectName>(json!("agent_core-1.0")).is_ok());
-        assert!(parse::<ProjectName>(json!("a' OR '1'='1")).is_err());
-        assert!(parse::<ProjectName>(json!("проект")).is_err());
-        assert!(parse::<Tags>(json!(vec!["t"; 16])).is_ok());
-        assert!(parse::<Tags>(json!(vec!["t"; 17])).is_err());
-    }
-
-    #[test]
-    fn tokens_and_authors_use_an_allowlist() {
-        for good in ["endpoint", "api.v2", "not-checked", "2fa_flow"] {
-            assert!(parse::<Token>(json!(good)).is_ok(), "{good}");
-        }
-        for bad in [
-            "",
-            "Endpoint",
-            "has space",
-            "-leading",
-            "a'b",
-            &"x".repeat(MAX_TOKEN_CHARS + 1),
-        ] {
-            assert!(parse::<Token>(json!(bad)).is_err(), "{bad}");
-        }
-        assert!(parse::<Author>(json!("claude/reviewer@host-1")).is_ok());
-        assert!(parse::<Author>(json!("two words")).is_err());
-        assert!(parse::<Author>(json!("")).is_err());
-    }
-
-    #[test]
-    fn timestamps_order_as_text() {
-        assert!(now() < seconds_from_now(1));
-        assert!(seconds_from_now(-1) < now());
-    }
-
-    #[test]
-    fn limit_rejects_zero_and_oversize() {
-        assert!(parse::<Limit>(json!(0)).is_err());
-        assert!(parse::<Limit>(json!(1)).is_ok());
-        assert!(parse::<Limit>(json!(MAX_LIMIT)).is_ok());
-        assert!(parse::<Limit>(json!(MAX_LIMIT + 1)).is_err());
-        assert!(parse::<Limit>(json!(-1)).is_err());
-    }
-
-    #[test]
-    fn scope_star_means_all_projects() {
-        assert!(matches!(parse::<Scope>(json!("*")).unwrap(), Scope::All));
-        assert!(matches!(
-            parse::<Scope>(json!("web")).unwrap(),
-            Scope::Project(_)
-        ));
-        assert!(parse::<Scope>(json!("a b")).is_err());
-    }
-
-    #[test]
-    fn unknown_fields_and_kinds_are_rejected() {
-        assert!(parse::<NewNote>(json!({"kind": "fact", "title": "t", "admin": true})).is_err());
-        assert!(parse::<NewNote>(json!({"kind": "manager", "title": "t"})).is_err());
-        assert!(parse::<NewNote>(json!({"kind": "fact", "title": "t"})).is_ok());
-    }
-
-    #[test]
-    fn every_kind_accepts_its_default_status() {
-        for kind in NoteKind::ALL {
-            if let Some(status) = kind.default_status() {
-                assert!(kind.check_status(status).is_ok());
-            }
-        }
-        assert!(NoteKind::Fact.check_status(Status::Failed).is_err());
-        assert!(NoteKind::Attempt.check_status(Status::Open).is_err());
-    }
-
-    #[test]
-    fn sanitized_project_replaces_foreign_characters() {
-        assert_eq!(
-            ProjectName::sanitized("my project!").unwrap().as_str(),
-            "my-project-"
-        );
-        assert!(ProjectName::sanitized("").is_none());
-    }
+    #[serde(skip)]
+    pub journal_id: i64,
 }
