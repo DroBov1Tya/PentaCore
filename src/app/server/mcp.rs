@@ -14,8 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::app::memory::Brain;
 use crate::app::tools::{self, Tool};
-
-const MAX_LINE_BYTES: usize = 1024 * 1024;
+use crate::settings::server::MAX_LINE_BYTES;
 
 pub async fn serve_stdio(brain: Arc<Brain>) -> Result<()> {
     let (stdin, stdout) = rmcp::transport::stdio();

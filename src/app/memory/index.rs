@@ -14,11 +14,7 @@ use tokio::sync::OnceCell;
 
 use super::db::Db;
 use super::model::{MemoryError, NoteId};
-
-const VECTOR_DIM: usize = 384;
-const SYNC_BATCH: usize = 16;
-// The model reads about 256 tokens; more text only costs time.
-const MAX_EMBEDDED_CHARS: usize = 2000;
+use crate::settings::embedding::{MAX_EMBEDDED_CHARS, SYNC_BATCH, VECTOR_DIM};
 
 type Result<T> = std::result::Result<T, MemoryError>;
 

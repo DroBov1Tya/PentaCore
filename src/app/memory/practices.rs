@@ -1,24 +1,18 @@
 // Checklists (done or not), one summary per task, confirming a note, and a
 // review of what needs attention.
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::journal::{self, Entry, NoteState, Op, RecordType};
 use super::model::{
-    AtMost, Attribution, Author, Basis, Body, Confidence, MemoryError, NewNote, NoteId, NoteKind,
-    NotePatch, ProjectName, RunId, Scope, Status, Title, invalid, now, seconds_from_now,
+    AtMost, Attribution, Author, Basis, Body, Confidence, MemoryError, NoteId, NoteKind, NotePatch,
+    ProjectName, RunId, Scope, Status, Title, invalid, now, seconds_from_now,
 };
 use super::notes;
-use super::tasks::{DEFAULT_BUDGET_CHARS, MAX_BUDGET_CHARS, MIN_BUDGET_CHARS, SUBTREE, truncated};
-
-const MAX_ITEMS_PER_NOTE: i64 = 100;
-const MAX_SUMMARY_TITLE_CHARS: usize = 180;
-const LISTED: i64 = 20;
-const SECTION_ROWS: i64 = 200;
-const DEFAULT_STALE_DAYS: u32 = 14;
-const MAX_STALE_DAYS: u32 = 365;
+use super::summaries;
+use super::tasks::SUBTREE;
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
@@ -175,20 +169,14 @@ pub struct Summarize {
     pub work: Body,
     // What the task ends as; `done` unless said otherwise.
     pub status: Option<Status>,
+    // Existing callers close tasks; close:false maintains a live summary.
+    pub close: Option<bool>,
+    pub report_ids: Option<AtMost<NoteId, 64>>,
+    pub expected_change_version: Option<i64>,
     pub confidence: Option<Confidence>,
     pub basis: Option<Basis>,
     pub author: Option<Author>,
     pub run: Option<RunId>,
-}
-
-fn summary_id(conn: &Connection, task: NoteId) -> Result<Option<NoteId>> {
-    Ok(conn
-        .query_row(
-            "SELECT id FROM notes WHERE parent_id = ?1 AND summary = 1",
-            [task],
-            |row| row.get(0),
-        )
-        .optional()?)
 }
 
 fn patch(id: NoteId, author: Option<Author>, run: Option<RunId>) -> NotePatch {
@@ -209,26 +197,43 @@ fn patch(id: NoteId, author: Option<Author>, run: Option<RunId>) -> NotePatch {
     }
 }
 
-// Writes or replaces the summary of a task and closes the task. The old
-// summary text stays as a revision.
+// Text, references, task status, revisions and freshness commit together.
 pub fn summarize(
     conn: &mut Connection,
     input: Summarize,
-    default_project: ProjectName,
+    _default_project: ProjectName,
 ) -> Result<Value> {
-    let task = notes::load(conn, input.task)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let task = notes::load(&tx, input.task)?;
     if !matches!(task.kind, NoteKind::Goal | NoteKind::Step) {
-        return Err(invalid(format!(
-            "note {} is a {}; a summary closes a goal or a step",
-            task.id, task.kind
-        )));
+        return Err(invalid("a summary belongs to a goal or step"));
     }
-    let closed_as = input.status.unwrap_or(Status::Done);
-    if !matches!(closed_as, Status::Done | Status::Failed | Status::Dropped) {
+    let close = input.close.unwrap_or(true);
+    if !close && input.status.is_some() {
+        return Err(invalid("status is only accepted when close is true"));
+    }
+    let status = if close {
+        input.status.unwrap_or(Status::Done)
+    } else {
+        task.status
+    };
+    if close && !matches!(status, Status::Done | Status::Failed | Status::Dropped) {
         return Err(invalid("status must be done, failed or dropped"));
     }
     if input.result.as_str().trim().is_empty() || input.work.as_str().trim().is_empty() {
         return Err(invalid("result and work must not be empty"));
+    }
+    let who = Attribution::new(input.author.clone(), input.run.clone(), Some(task.id));
+    let created = summaries::id(&tx, task.id)?.is_none();
+    let summary = summaries::ensure(&tx, &task, &who)?;
+    if let Some(expected) = input.expected_change_version {
+        let actual = summaries::version(&tx, task.id)?;
+        if expected != actual {
+            return Err(MemoryError::Conflict(format!(
+                "task {} changed from version {expected} to {actual}; read it again before summarizing",
+                task.id
+            )));
+        }
     }
     let body = Body::try_from(format!(
         "Result:\n{}\n\nWork done:\n{}",
@@ -236,63 +241,46 @@ pub fn summarize(
         input.work.as_str().trim()
     ))
     .map_err(invalid)?;
-
-    let (note, created) = match summary_id(conn, task.id)? {
-        Some(id) => {
-            let change = NotePatch {
-                body: Some(body),
-                confidence: input.confidence,
-                basis: input.basis,
-                ..patch(id, input.author.clone(), input.run.clone())
-            };
-            (notes::update(conn, change)?, false)
-        }
-        None => {
-            let short: String = task.title.chars().take(MAX_SUMMARY_TITLE_CHARS).collect();
-            let new = NewNote {
-                kind: NoteKind::Fact,
-                title: Title::try_from(format!("Summary: {short}")).map_err(invalid)?,
-                body,
-                status: None,
-                tags: Default::default(),
-                parent: Some(task.id),
-                project: None,
-                links: Default::default(),
-                entity: None,
-                author: input.author.clone(),
-                run: input.run.clone(),
-                task: None,
-                confidence: input.confidence,
-                basis: input.basis,
-            };
-            let mut note = notes::create(conn, new, default_project)?.note;
-            conn.execute("UPDATE notes SET summary = 1 WHERE id = ?1", [note.id])?;
-            note.summary = true;
-            (note, true)
-        }
-    };
-    if task.status != closed_as {
-        let close = NotePatch {
-            status: Some(closed_as),
-            ..patch(task.id, input.author, input.run)
-        };
-        notes::update(conn, close)?;
+    notes::update_in(
+        &tx,
+        NotePatch {
+            body: Some(body),
+            status: Some(Status::Active),
+            confidence: input.confidence,
+            basis: input.basis,
+            ..patch(summary, input.author.clone(), input.run.clone())
+        },
+    )?;
+    if let Some(reports) = input.report_ids {
+        summaries::set_reports(&tx, summary, reports.as_slice(), &who)?;
     }
-
+    if task.status != status {
+        notes::update_in(
+            &tx,
+            NotePatch {
+                status: Some(status),
+                ..patch(task.id, input.author, input.run)
+            },
+        )?;
+    }
+    // Even an unchanged text can have been reread and reconciled with new work.
+    journal::record(
+        &tx,
+        Entry::new(&task.project, RecordType::Note, summary, Op::Checked, &who)
+            .fields(["summary_reviewed"]),
+    )?;
+    summaries::mark_reviewed(&tx, task.id)?;
+    let note = notes::load(&tx, summary)?;
     let mut reply = serde_json::to_value(&note).map_err(|e| MemoryError::Internal(e.into()))?;
     reply["created"] = json!(created);
-    reply["task"] = json!({ "id": task.id, "status": closed_as });
-    let open = open_items(conn, task.id)?;
-    if open["open"]
-        .as_array()
-        .is_some_and(|items| !items.is_empty())
-    {
+    reply["task"] = json!({ "id": task.id, "status": status });
+    reply["freshness"] = summaries::own(&tx, task.id, 0)?["freshness"].clone();
+    if close {
+        let open = open_items(&tx, task.id)?;
         reply["checklist_left_open"] = open["open"].clone();
+        reply["parts_without_summary"] = json!(unsummarized(&tx, Some(task.id), None, LISTED)?);
     }
-    let missing = unsummarized(conn, Some(task.id), None, LISTED)?;
-    if !missing.is_empty() {
-        reply["parts_without_summary"] = Value::from(missing);
-    }
+    tx.commit()?;
     Ok(reply)
 }
 
@@ -314,7 +302,8 @@ fn unsummarized(
              WHERE n.kind IN ('goal', 'step') AND n.status IN ('done', 'failed', 'dropped')
                AND (?1 IS NULL OR (n.id IN (SELECT id FROM sub) AND n.id <> ?1))
                AND (?2 IS NULL OR n.project = ?2)
-               AND NOT EXISTS (SELECT 1 FROM notes s WHERE s.parent_id = n.id AND s.summary = 1)
+               AND (NOT EXISTS (SELECT 1 FROM notes s WHERE s.parent_id = n.id AND s.summary = 1)
+                    OR EXISTS (SELECT 1 FROM task_summary_state st WHERE st.task_id = n.id AND st.reviewed_version IS NULL))
              ORDER BY n.updated_at DESC, n.id DESC LIMIT ?3",
         )?
         .query_map(params![under, project, limit], |row| {
@@ -328,134 +317,12 @@ fn unsummarized(
         .collect::<rusqlite::Result<_>>()?)
 }
 
-// One summary as the reader sees it: text, and how far it was trusted.
-struct SummaryRow {
-    id: Option<NoteId>,
-    body: Option<String>,
-    updated_at: Option<String>,
-    confidence: Option<f64>,
-    basis: Option<String>,
-}
+pub use super::summaries::Query as TaskSummaryQuery;
+use crate::settings::limits::{DEFAULT_STALE_DAYS, MAX_ITEMS_PER_NOTE, MAX_STALE_DAYS};
+use crate::settings::listing::LISTED;
 
-impl SummaryRow {
-    fn read(row: &rusqlite::Row<'_>, first: usize) -> rusqlite::Result<Self> {
-        Ok(Self {
-            id: row.get(first)?,
-            body: row.get(first + 1)?,
-            updated_at: row.get(first + 2)?,
-            confidence: row.get(first + 3)?,
-            basis: row.get(first + 4)?,
-        })
-    }
-
-    fn shown(self, max_chars: usize) -> Value {
-        let (Some(id), Some(body)) = (self.id, self.body) else {
-            return Value::Null;
-        };
-        let (text, cut) = truncated(&body, max_chars);
-        let mut value = json!({ "id": id, "text": text, "updated_at": self.updated_at });
-        if cut {
-            value["truncated"] = json!(true);
-        }
-        if let Some(confidence) = self.confidence {
-            value["confidence"] = json!(confidence);
-        }
-        if let Some(basis) = self.basis {
-            value["basis"] = json!(basis);
-        }
-        value
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskSummaryQuery {
-    pub task: NoteId,
-    pub budget_chars: Option<usize>,
-}
-
-// A task as its summaries only: its own, then its sub-tasks' in tree order.
 pub fn task_summary(conn: &Connection, query: &TaskSummaryQuery) -> Result<Value> {
-    let limit = query.budget_chars.unwrap_or(DEFAULT_BUDGET_CHARS);
-    if !(MIN_BUDGET_CHARS..=MAX_BUDGET_CHARS).contains(&limit) {
-        return Err(invalid(format!(
-            "budget_chars must be between {MIN_BUDGET_CHARS} and {MAX_BUDGET_CHARS}"
-        )));
-    }
-    let task = notes::load(conn, query.task)?;
-
-    let own = conn
-        .query_row(
-            "SELECT id, body, updated_at, confidence, basis FROM notes
-             WHERE parent_id = ?1 AND summary = 1",
-            [task.id],
-            |row| SummaryRow::read(row, 0),
-        )
-        .optional()?
-        .map_or(Value::Null, |summary| summary.shown(limit / 2));
-    let mut used = own.to_string().chars().count();
-
-    // Zero padded path sorts rows in depth first order.
-    let rows: Vec<Value> = conn
-        .prepare(
-            "WITH RECURSIVE tree (id, depth, path) AS (
-                 SELECT id, 0, printf('%019d', id) FROM notes WHERE id = ?1
-                 UNION ALL
-                 SELECT c.id, tree.depth + 1, tree.path || printf('/%019d', c.id)
-                 FROM notes c JOIN tree ON c.parent_id = tree.id
-                 WHERE c.kind IN ('goal', 'step')
-             )
-             SELECT n.id, n.kind, n.status, n.title, n.parent_id, tree.depth,
-                    s.id, s.body, s.updated_at, s.confidence, s.basis
-             FROM tree JOIN notes n ON n.id = tree.id
-             LEFT JOIN notes s ON s.parent_id = n.id AND s.summary = 1
-             WHERE tree.depth > 0
-             ORDER BY tree.path LIMIT ?2",
-        )?
-        .query_map(params![task.id, SECTION_ROWS], |row| {
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "kind": row.get::<_, String>(1)?,
-                "status": row.get::<_, String>(2)?,
-                "title": row.get::<_, String>(3)?,
-                "parent": row.get::<_, Option<i64>>(4)?,
-                "depth": row.get::<_, i64>(5)?,
-                "summary": SummaryRow::read(row, 6)?.shown(limit / 4),
-            }))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-
-    let total = rows.len();
-    let mut parts = Vec::new();
-    for part in rows {
-        let cost = part.to_string().chars().count();
-        if used + cost > limit {
-            break;
-        }
-        used += cost;
-        parts.push(part);
-    }
-    let omitted = total - parts.len();
-    let without: Vec<&Value> = parts
-        .iter()
-        .filter(|part| part["summary"].is_null())
-        .map(|part| &part["id"])
-        .collect();
-
-    Ok(json!({
-        "task": {
-            "id": task.id,
-            "project": task.project,
-            "kind": task.kind,
-            "status": task.status,
-            "title": task.title,
-        },
-        "summary": own,
-        "parts_without_summary": without,
-        "parts": parts,
-        "checklist": open_items(conn, task.id)?,
-        "budget": { "limit": limit, "used": used, "omitted_parts": omitted },
-    }))
+    summaries::read(conn, query)
 }
 
 #[derive(Debug, Deserialize)]

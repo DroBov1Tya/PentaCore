@@ -9,37 +9,15 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
 use super::index::{Neighbor, cosine};
-use super::model::{Limit, MemoryError, NoteId, NoteKind, Scope, SearchText, invalid};
+use super::model::{EdgeKind, Limit, MemoryError, NoteId, NoteKind, Scope, SearchText, invalid};
 use super::words::{self, Query, Store};
-
-const DEFAULT_LIMIT: usize = 8;
-const CANDIDATES_PER_STORE: usize = 40;
-pub const SEMANTIC_CANDIDATES: usize = 40;
-const PREVIEW_CHARS: usize = 300;
-const SNIPPET_CHARS: usize = 200;
-const SNIPPET_LEAD_CHARS: usize = 60;
-const COMPARED_CHARS: usize = 600;
-
-// Similarity of unrelated texts sits near the floor; of a paraphrase, near the ceiling.
-const SIMILARITY_FLOOR: f32 = 0.25;
-const SIMILARITY_CEILING: f32 = 0.75;
-const AGREEMENT_BONUS: f32 = 0.25;
-const MIN_RELEVANCE: f32 = 0.08;
-// Share of the best score below which a record is not shown.
-const WEAKEST_SHOWN: f32 = 0.3;
-
-const NO_LONGER_VALID: f32 = 0.5;
-const DISPUTED: f32 = 0.8;
-const FRESHNESS_BONUS: f32 = 0.06;
-const FRESHNESS_HALF_LIFE_DAYS: f32 = 45.0;
-const TASK_BONUS: f32 = 0.2;
-
-const SAME_TEXT: f32 = 0.8;
-const SAME_TITLE_SIMILAR_TEXT: f32 = 0.5;
-// A rewording is close in meaning and shares words; meaning alone would also
-// merge different facts about one subject.
-const SAME_MEANING: f32 = 0.75;
-const SAME_MEANING_SHARED_WORDS: f32 = 0.35;
+use crate::settings::ranking::{
+    AGREEMENT_BONUS, CANDIDATES_PER_STORE, COMPARED_CHARS, DEFAULT_LIMIT, DISPUTED,
+    FRESHNESS_BONUS, FRESHNESS_HALF_LIFE_DAYS, MIN_RELEVANCE, NO_LONGER_VALID, PREVIEW_CHARS,
+    SAME_MEANING, SAME_MEANING_SHARED_WORDS, SAME_TEXT, SAME_TITLE_SIMILAR_TEXT,
+    SIMILARITY_CEILING, SIMILARITY_FLOOR, SNIPPET_CHARS, SNIPPET_LEAD_CHARS, TASK_BONUS,
+    WEAKEST_SHOWN,
+};
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
@@ -234,8 +212,26 @@ fn load_notes(
         })?
         .collect::<rusqlite::Result<_>>()?;
 
-    // A newer note that replaces or disputes this one.
-    let challenges: Vec<(i64, i64, String)> = conn
+    for (target, challenger, kind) in challenges(conn, ids)? {
+        let Some(item) = items.iter_mut().find(|item| item.id == target) else {
+            continue;
+        };
+        if kind == EdgeKind::Supersedes {
+            item.validity.superseded = true;
+            item.superseded_by.push(challenger);
+        } else {
+            item.validity.disputed = true;
+            item.contradicted_by.push(challenger);
+        }
+    }
+    Ok(items)
+}
+
+// Newer notes that replace or dispute the given ones (a JSON array of ids),
+// as (target, challenger, kind). A dropped note challenges nothing, and a
+// contradiction counts only when it is not older than what it disputes.
+pub(super) fn challenges(conn: &Connection, ids: &str) -> Result<Vec<(NoteId, NoteId, EdgeKind)>> {
+    Ok(conn
         .prepare(
             "SELECT e.dst, e.src, e.kind FROM edges e
              JOIN notes s ON s.id = e.src
@@ -246,20 +242,7 @@ fn load_notes(
              ORDER BY e.src",
         )?
         .query_map([ids], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (target, challenger, kind) in challenges {
-        let Some(item) = items.iter_mut().find(|item| item.id == target) else {
-            continue;
-        };
-        if kind == "supersedes" {
-            item.validity.superseded = true;
-            item.superseded_by.push(challenger);
-        } else {
-            item.validity.disputed = true;
-            item.contradicted_by.push(challenger);
-        }
-    }
-    Ok(items)
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 fn load_entities(conn: &Connection, ids: &str, task: Option<NoteId>) -> Result<Vec<Item>> {

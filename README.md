@@ -63,13 +63,6 @@ Platform notes:
 - **macOS.** The binary is not signed. If it was downloaded with a browser, macOS quarantines it; clear the flag once: `xattr -d com.apple.quarantine pentacore`. Intel Macs are not supported: ONNX Runtime ships no binaries for them.
 - **Windows.** Needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (2015 to 2022), which most systems already have.
 
-Every release carries `SHA256SUMS`, a CycloneDX SBOM (`pentacore.cdx.json`) and a signed build provenance attestation. To check a download:
-
-```sh
-sha256sum -c SHA256SUMS --ignore-missing
-gh attestation verify pentacore-<version>-<target>.tar.gz --repo DroBov1Tya/PentaCore
-```
-
 ### From source
 
 Requires Rust 1.88 or newer, and Perl and `make` for the bundled OpenSSL (on Windows, [Strawberry Perl](https://strawberryperl.com) and the MSVC build tools). Builds for the targets above only, for the same reason as the binaries.
@@ -162,7 +155,7 @@ Listed by default (`core`):
 | `recall` | Search notes and entities, most relevant first, repeats shown once. `kind` narrows it, e.g. to lessons. |
 | `link` | Typed links between notes: `depends_on`, `supports`, `contradicts`, `answers`, `supersedes`, `relates_to`, `uses`. |
 | `graph` | The tree beneath a note or an entity. |
-| `resume` | State of a project, or with `task` what is needed to continue that task, including the context handed down to it, within a size budget. |
+| `resume` | State of a project, or with `task` the area rooted at that task: its brief, summary and freshness, one page of immediate children (id, kind, title, status), checkpoint, open checklist and the context handed down to it, with no size limit: the summary comes whole. Children are paged and never expanded; the tasks above are returned only with `include_ancestors`. |
 | `checkpoint` | Save where the work stands mid-way, for the project or one task. |
 | `checklist` | Items on a note that are done or not done. |
 | `summarize` | Close a goal or step with its one summary. |
@@ -246,7 +239,7 @@ Handing a step to a sub-agent, with a scope decision shared from the goal and wh
   "links": [{"kind": "uses", "to": 4}]}}
 ```
 
-The sub-agent is told `zone=6` and starts with `{"name": "resume", "arguments": {"task": 6}}`. Its `context` lists summary 4, then decision 5, and goal 1 above it.
+The sub-agent is told `zone=6` and starts with `{"name": "resume", "arguments": {"task": 6}}`. Its `context.shared` lists summary 4 and decision 5; goal 1 above it is returned only with `include_ancestors`.
 
 ## Projects and several agents
 
@@ -327,7 +320,7 @@ src/
     notes.rs                notes, links, full-text search, checkpoints
     entities.rs             entities, checks, claims, structured queries
     journal.rs              journal, revisions, history, redaction
-    tasks.rs                resuming one task within a budget
+    tasks.rs                resuming the area rooted at one task
     practices.rs            checklists, task summaries, confirm, review
     words.rs                matching and scoring by words
     index.rs                embeddings and search by meaning

@@ -6,8 +6,7 @@ use subtle::ConstantTimeEq;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::app::memory::model::ProjectName;
-
-const MIN_TOKEN_BYTES: usize = 32;
+use crate::settings::server::MIN_TOKEN_BYTES;
 
 // Dependencies are noisy at info, so only this crate gets it.
 const DEFAULT_LOG_FILTER: &str = "warn,pentacore=info";

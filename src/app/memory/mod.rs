@@ -6,6 +6,7 @@ pub mod model;
 pub mod notes;
 pub mod practices;
 pub mod recall;
+pub mod summaries;
 pub mod tasks;
 pub mod words;
 
