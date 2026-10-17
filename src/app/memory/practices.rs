@@ -13,6 +13,7 @@ use super::model::{
 use super::notes;
 use super::summaries;
 use super::tasks::SUBTREE;
+use crate::settings::limits::MAX_REPORT_IDS;
 
 type Result<T> = std::result::Result<T, MemoryError>;
 
@@ -171,7 +172,7 @@ pub struct Summarize {
     pub status: Option<Status>,
     // Existing callers close tasks; close:false maintains a live summary.
     pub close: Option<bool>,
-    pub report_ids: Option<AtMost<NoteId, 64>>,
+    pub report_ids: Option<AtMost<NoteId, MAX_REPORT_IDS>>,
     pub expected_change_version: Option<i64>,
     pub confidence: Option<Confidence>,
     pub basis: Option<Basis>,
@@ -274,7 +275,7 @@ pub fn summarize(
     let mut reply = serde_json::to_value(&note).map_err(|e| MemoryError::Internal(e.into()))?;
     reply["created"] = json!(created);
     reply["task"] = json!({ "id": task.id, "status": status });
-    reply["freshness"] = summaries::own(&tx, task.id, 0)?["freshness"].clone();
+    reply["freshness"] = summaries::own(&tx, task.id)?["freshness"].clone();
     if close {
         let open = open_items(&tx, task.id)?;
         reply["checklist_left_open"] = open["open"].clone();

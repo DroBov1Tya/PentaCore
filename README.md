@@ -27,13 +27,13 @@ The split matters. "Show every host whose `tls` check failed" is a query over fi
 
 **Done or not done.** A step carries a `checklist`. An item has two states only, so whoever picks the task up later reads what is left without interpreting anyone's status words. For many similar targets, each target is an entity and each check a `mark_check`, so that "which hosts are left" is one query.
 
-**A summary at every level.** When a step is finished, `summarize` writes its one summary and closes it: `work`, everything that was done, in brief, failures included; `result`, the outcome in detail. A goal gets its own, written from the summaries of its steps. `task_summary` returns a task as its summaries in tree order and nothing else, so "what was checked on `example.com`, and what came of it" costs one call however many notes lie beneath.
+**A summary at every level.** Creating a goal or step initializes its live summary from the brief. Keep it current with `summarize(close=false)` during work and before a handoff or context compaction; the normal closing call also closes the task. `work` covers actions, including failures; `result` describes the whole area's state, findings, blockers and next actions; `report_ids` points to its detailed notes (up to 2048 ids). Before handoff, save the checkpoint first, reread the current summary version, then refresh the summary as the final write with `expected_change_version`; a later checkpoint would make it stale again. `task_summary(task=<id>)` returns that task's complete summary and one page of immediate child descriptors. Children have independent summaries, read only by requesting those children directly. A parent overview is maintained from the child summaries needed for its work.
 
 **How far to trust a note.** A note carries `confidence` (0 to 1) and `basis`, a sentence or two on what the confidence rests on. They come back with the text wherever the note is read, so the next agent knows how sure the last one was. `confirm` records that a note was checked again and found true; that is the only thing that sets `verified_at`. Confidence does not affect ranking.
 
 **Lessons.** Know-how worth reusing is a note of kind `lesson`: the problem, what was found, how it was checked, whether it was confirmed, what was done. When a later, better check reaches a different conclusion, the lesson is updated; the earlier text stays as a revision and searches return only the current one.
 
-**Handing work down.** A lead agent gives part of the work to another agent as a step: the brief goes in its body, and the notes the other agent needs are linked from the step with `uses`. A note a task uses is context for that task and for every task beneath it, so a scope decision linked from the goal reaches every sub-agent at any depth, and a finding linked from one step reaches only the work under that step. The other agent is told only the step's id and starts with `resume task=<id>`: the reply's `context` holds the shared notes, nearest first, with their confidence and basis, followed by the tasks above with their bodies. A shared note that a newer one supersedes or contradicts names it in `superseded_by` or `contradicted_by`, as in `recall`; a dropped one is left out. One call, within the size budget, instead of the lead's whole conversation; `budget.omitted` counts what did not fit. Results travel back up as summaries.
+**Handing work down.** A lead agent gives part of the work to another agent as a step. Its brief initializes the live summary; include the objective, constraints, done criteria and relevant detail pointers. Link supporting notes with `uses` at the level where they apply: these identify context for that task and its descendants. The other agent receives the assigned task id and starts with `resume task=<id>`: its complete summary and labeled immediate children. The agent explicitly requests a child summary or a detailed note as the objective requires. `get_note` and `graph` expose context links and parent references. Keep essential handoff state in the live summary; scoped `resume` does not bundle brief, checkpoints, shared-note bodies or descendant checklists. Results travel upward through maintained summaries.
 
 **Search before experimenting.** The instructions the server sends tell the agent to look for earlier work first.
 
@@ -155,11 +155,11 @@ Listed by default (`core`):
 | `recall` | Search notes and entities, most relevant first, repeats shown once. `kind` narrows it, e.g. to lessons. |
 | `link` | Typed links between notes: `depends_on`, `supports`, `contradicts`, `answers`, `supersedes`, `relates_to`, `uses`. |
 | `graph` | The tree beneath a note or an entity. |
-| `resume` | State of a project, or with `task` the area rooted at that task: its brief, summary and freshness, one page of immediate children (id, kind, title, status), checkpoint, open checklist and the context handed down to it, with no size limit: the summary comes whole. Children are paged and never expanded; the tasks above are returned only with `include_ancestors`. |
+| `resume` | Without `task`, the project dashboard. With `task`, the selected area root: its complete summary with freshness and report ids, task metadata, and a page of immediate children (id, kind, title, status, summary id). Start at the global task, then request chosen children directly. |
 | `checkpoint` | Save where the work stands mid-way, for the project or one task. |
 | `checklist` | Items on a note that are done or not done. |
-| `summarize` | Close a goal or step with its one summary. |
-| `task_summary` | Read a task from its summaries alone. |
+| `summarize` | Update the complete live summary of a goal or step; `close=false` keeps it open, otherwise it closes. |
+| `task_summary` | The selected task's complete summary and a page of immediate child descriptors. Child summaries require direct requests. |
 | `confirm` | Record that a note was checked again and still holds. |
 | `upsert_entity` | Create or update by `(project, type, key)`; attributes are merged. |
 | `query_entities` | Filter, sort, count and group by column, `attrs.<name>` or `check.<name>`. |
@@ -239,7 +239,7 @@ Handing a step to a sub-agent, with a scope decision shared from the goal and wh
   "links": [{"kind": "uses", "to": 4}]}}
 ```
 
-The sub-agent is told `zone=6` and starts with `{"name": "resume", "arguments": {"task": 6}}`. Its `context.shared` lists summary 4 and decision 5; goal 1 above it is returned only with `include_ancestors`.
+The sub-agent starts with `resume` on the returned step id. It receives that area's complete live summary and immediate child descriptors. It opens the step with `get_note` to inspect its links, then explicitly reads the supporting notes needed for the assigned check. Use IDs returned by the server: creating a task also creates a separate summary note.
 
 ## Projects and several agents
 
@@ -334,8 +334,8 @@ skills/pentacore-memory/    usage guide for agents
 Set the new `version` in `Cargo.toml`, commit, then push a tag of the same name with a `v`:
 
 ```sh
-git tag v0.8.0
-git push origin v0.8.0
+git tag v0.8.1
+git push origin v0.8.1
 ```
 
 The `release` workflow builds every target on its own native runner, starts each binary and checks that it answers an MCP `initialize`, then publishes a GitHub release with the archives, `SHA256SUMS`, the SBOM and a build provenance attestation. It refuses a tag that does not match `Cargo.toml`. Run it by hand from the Actions tab to build without publishing; the archives are then kept as run artifacts.

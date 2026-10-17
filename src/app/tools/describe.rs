@@ -9,7 +9,7 @@ use super::{DEFAULT_GRAPH_DEPTH, Tool};
 use crate::app::memory::entities::Op;
 use crate::app::memory::journal::RecordType;
 use crate::app::memory::model::{EdgeKind, NoteKind, Status};
-use crate::settings::limits::MAX_GRAPH_DEPTH;
+use crate::settings::limits::{MAX_GRAPH_DEPTH, MAX_REPORT_IDS};
 use crate::settings::resume::{DEFAULT_CHILDREN, MAX_CHILDREN};
 
 // Every tool, for the HTTP API.
@@ -168,7 +168,8 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
         Tool::Link => (
             "Connect two notes, read as 'src <kind> dst'; remove=true takes the link away. \
              depends_on must stay acyclic. A goal or step that `uses` a note hands it down as \
-             context to itself and every task beneath it; `resume` returns it.",
+             context to itself and every task beneath it. Inspect links with `get_note` or \
+             `graph`, then request the needed context notes explicitly.",
             object(
                 json!({
                     "src": integer(),
@@ -194,13 +195,12 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
         Tool::Resume => (
             "Without `task`: unfinished goals, steps in progress, open questions, recent notes, \
              entity counts, the last checkpoint, and `tasks` with the changes since each one's \
-             checkpoint. With `task` (the root of the area you were given): its brief, its \
-             summary (whole, no size limit) with freshness and report ids, one page of its immediate children (id, \
-             kind, title, status, summary id; never expanded), its last checkpoint, open \
-             checklist items and `context.shared` (notes it or a task above it `uses`). \
+             checkpoint. With `task` (the root of the area you were given): its whole \
+             summary with freshness and report ids, task metadata, and one page of its \
+             immediate children (id, kind, title, status, summary id; never expanded). \
              Children are paged with `children_limit` and `children_cursor` (the `next_cursor` \
-             of the last page); read one with `resume` on its id or `task_summary`. The tasks \
-             above are left out unless `include_ancestors` is true.",
+             of the last page). Start at the global task to orient, then request a chosen \
+             child with `task_summary` or `resume` on its id. Each summary comes whole.",
             object(
                 json!({
                     "project": text(PROJECT),
@@ -208,14 +208,16 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
                     "children_limit": json!({ "type": "integer", "minimum": 1,
                         "maximum": MAX_CHILDREN, "default": DEFAULT_CHILDREN }),
                     "children_cursor": id("`next_cursor` of the previous page of children."),
-                    "include_ancestors": json!({ "type": "boolean", "default": false }),
                 }),
                 &[],
             ),
         ),
         Tool::Checkpoint => (
-            "Save where the work stands mid-way, to be read back by `resume`. With `task` it \
-             belongs to that task. To close a task use `summarize` instead.",
+            "Save where the work stands mid-way. With `task` it belongs to that task. \
+             Before handoff, checkpoint first, reread the task summary for its current \
+             change version, then `summarize(close=false)` as the final write so a scoped \
+             `resume` receives a fresh handoff. Project checkpoints appear in the \
+             project dashboard. To close a task use `summarize` instead.",
             object(
                 json!({
                     "summary": text("What is done, what is in progress, what comes next, and why."),
@@ -258,7 +260,7 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
                     "work": text("All that was done, in brief, failures included."),
                     "status": { "type": "string", "enum": ["done", "failed", "dropped"], "default": "done" },
                     "close": json!({ "type": "boolean", "default": true }),
-                    "report_ids": json!({ "type": "array", "maxItems": 64, "items": integer() }),
+                    "report_ids": json!({ "type": "array", "maxItems": MAX_REPORT_IDS, "items": integer() }),
                     "expected_change_version": json!({ "type": "integer",
                         "description": "`freshness.change_version` you read; a mismatch means the task changed since." }),
                     "confidence": confidence(),
@@ -270,11 +272,11 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
             ),
         ),
         Tool::TaskSummary => (
-            "Read a task from summaries alone: its own, with freshness and report ids, then one \
+            "Read one task: its own whole summary, with freshness and report ids, then one \
              page of its immediate children (id, kind, title, status, summary id). Answers \
              'what was done and found here' without the task's notes. Children are paged with \
-             `children_limit` and `children_cursor` (or `children_offset`); \
-             `include_child_summaries` adds each child's own summary.",
+             `children_limit` and `children_cursor` (or `children_offset`). A child's summary \
+             is returned only when that child is requested as `task`.",
             object(
                 json!({
                     "task": integer(),
@@ -282,7 +284,6 @@ pub fn describe(tool: Tool) -> (&'static str, Value) {
                         "maximum": MAX_CHILDREN, "default": DEFAULT_CHILDREN }),
                     "children_cursor": id("`next_cursor` of the previous page."),
                     "children_offset": json!({ "type": "integer", "minimum": 0 }),
-                    "include_child_summaries": json!({ "type": "boolean", "default": false }),
                 }),
                 &["task"],
             ),

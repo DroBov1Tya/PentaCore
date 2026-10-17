@@ -99,17 +99,27 @@ with typed links. Found by `recall`.
 and named checks. Filtered and counted by `query_entities`.
 
 How to work:
-- Start with `resume`; with `task` it returns what is needed to continue that task.
+- Start with `resume` for the project dashboard; with `task` it returns that area's whole \
+summary and one page of labeled immediate children. Start at the global/root task, then \
+request chosen children directly with `task_summary` or scoped `resume`.
 - Before trying something, `recall` it. Experiment only where nothing is recorded.
 - A task is a goal; its parts are steps beneath it; findings go beneath their step.
 - Plan a step as a `checklist`. An item is done or not done; tick it the moment it is finished.
 - For many similar targets use entities and `mark_check`, not one checklist per target.
 - To hand part of the work to another agent, make it a step: the brief in its body, and the \
 notes it needs linked with `uses`. A note a task uses is context for every task beneath it too, \
-so share it at the level it applies to. The other agent starts with `resume` on that step; \
-`context` holds what was handed down.
+so share it at the level it applies to. Keep essential instructions and detail pointers in \
+the step's live summary. The other agent starts with `resume` on that step; it reads the \
+summary, then explicitly requests needed child summaries or detail notes. `get_note` and \
+`graph` expose `uses` links and parent references when wider context is needed.
 - When a step or goal is finished, `summarize` it while you still see everything: all that was \
-done in brief, the outcome in detail. `task_summary` reads a task from summaries alone.
+done in brief, the outcome in detail. Keep the whole area's live summary current during \
+work with `summarize(close=false)`, including its relevant `report_ids`. Each child's \
+summary is independent and returned only on a direct request for that child.
+- Before handoff or context compaction, save `checkpoint` first, reread the task summary \
+for its current `freshness.change_version`, then update the whole summary with \
+`summarize(close=false, expected_change_version=...)` as the final write. Scoped `resume` \
+returns this summary; it does not bundle checkpoints, brief, shared-note bodies or checklists.
 - Keep reusable know-how as a note of kind `lesson`: the problem, what was found, how it was \
 checked, whether it was confirmed, what was done.
 
@@ -164,8 +174,6 @@ struct ResumeArgs {
     task: Option<NoteId>,
     children_limit: Option<usize>,
     children_cursor: Option<NoteId>,
-    #[serde(default)]
-    include_ancestors: bool,
 }
 
 #[derive(Deserialize)]
@@ -393,13 +401,12 @@ async fn resume(brain: &Brain, args: ResumeArgs) -> Result<Value, MemoryError> {
             task,
             children_limit: args.children_limit,
             children_cursor: args.children_cursor,
-            include_ancestors: args.include_ancestors,
         };
         return brain.db.run(move |conn| tasks::resume(conn, &query)).await;
     }
-    if args.children_limit.is_some() || args.children_cursor.is_some() || args.include_ancestors {
+    if args.children_limit.is_some() || args.children_cursor.is_some() {
         return Err(invalid(
-            "children_limit, children_cursor and include_ancestors apply to a task; give task too",
+            "children_limit and children_cursor apply to a task; give task too",
         ));
     }
     let scope = args.project.unwrap_or_else(|| brain.default_scope());

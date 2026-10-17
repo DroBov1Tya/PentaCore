@@ -877,7 +877,7 @@ fn unfinished_tasks(conn: &Connection, project: Option<&str>) -> Result<Vec<Task
 }
 
 pub(super) const CHECKPOINT_COLUMNS: &str =
-    "id, project, summary, author, created_at, run, task_id, journal_id";
+    "id, project, summary, author, created_at, run, task_id";
 
 pub(super) fn checkpoint_from_row(row: &Row<'_>) -> rusqlite::Result<Checkpoint> {
     Ok(Checkpoint {
@@ -888,7 +888,6 @@ pub(super) fn checkpoint_from_row(row: &Row<'_>) -> rusqlite::Result<Checkpoint>
         created_at: row.get(4)?,
         run: row.get(5)?,
         task: row.get(6)?,
-        journal_id: row.get(7)?,
     })
 }
 

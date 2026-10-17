@@ -691,6 +691,4 @@ pub struct Checkpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<NoteId>,
     pub created_at: String,
-    #[serde(skip)]
-    pub journal_id: i64,
 }

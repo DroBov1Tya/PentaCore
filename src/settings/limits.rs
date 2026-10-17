@@ -20,5 +20,6 @@ pub const DEFAULT_CLAIM_SECONDS: u32 = 15 * 60;
 pub const MAX_CLAIM_SECONDS: u32 = 24 * 60 * 60;
 pub const MAX_CHECKS_PER_CALL: usize = 32;
 pub const MAX_ITEMS_PER_NOTE: i64 = 100;
+pub const MAX_REPORT_IDS: usize = 2048;
 pub const DEFAULT_STALE_DAYS: u32 = 14;
 pub const MAX_STALE_DAYS: u32 = 365;
